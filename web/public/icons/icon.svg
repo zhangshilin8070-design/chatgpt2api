@@ -1,0 +1,37 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="82" y1="48" x2="438" y2="470" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111827" />
+      <stop offset="0.54" stop-color="#312E81" />
+      <stop offset="1" stop-color="#7C3AED" />
+    </linearGradient>
+    <radialGradient id="glowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(164 136) rotate(45) scale(220 170)">
+      <stop stop-color="#60A5FA" stop-opacity="0.72" />
+      <stop offset="1" stop-color="#60A5FA" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="glowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(374 358) rotate(-28) scale(210 160)">
+      <stop stop-color="#F0ABFC" stop-opacity="0.7" />
+      <stop offset="1" stop-color="#F0ABFC" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="card" x1="140" y1="114" x2="384" y2="408" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.96" />
+      <stop offset="1" stop-color="#E0E7FF" stop-opacity="0.9" />
+    </linearGradient>
+    <filter id="shadow" x="70" y="62" width="372" height="400" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="28" stdDeviation="28" flood-color="#020617" flood-opacity="0.36" />
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)" />
+  <ellipse cx="160" cy="130" rx="164" ry="124" fill="url(#glowA)" />
+  <ellipse cx="370" cy="365" rx="154" ry="118" fill="url(#glowB)" />
+  <g filter="url(#shadow)">
+    <rect x="118" y="94" width="276" height="324" rx="58" fill="url(#card)" />
+    <rect x="151" y="137" width="210" height="34" rx="17" fill="#111827" fill-opacity="0.9" />
+    <rect x="151" y="202" width="146" height="24" rx="12" fill="#6366F1" fill-opacity="0.82" />
+    <rect x="151" y="246" width="210" height="24" rx="12" fill="#A5B4FC" fill-opacity="0.86" />
+    <rect x="151" y="290" width="178" height="24" rx="12" fill="#C4B5FD" fill-opacity="0.9" />
+    <circle cx="320" cy="214" r="42" fill="#111827" />
+    <path d="M302 216L316 230L342 198" stroke="white" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M179 360C214 332 256 325 300 337C321 343 338 354 351 370" stroke="#111827" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" opacity="0.9" />
+  </g>
+</svg>
