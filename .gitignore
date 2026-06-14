@@ -45,10 +45,10 @@ test/deploy_dual_bucket.py
 # IDE / agent private config (contains local absolute paths)
 .kiro/
 
-# Android build artifacts and local config
-android-image-app/.gradle/
-android-image-app/.kotlin/
-android-image-app/local.properties
+# Android app (maintained in a separate repository)
+android-image-app/
+
+# Build artifacts and local config
 **/build/
 *.iml
 
