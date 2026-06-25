@@ -52,7 +52,7 @@ func (e *Engine) HandleImageGenerations(ctx context.Context, body map[string]any
 		return nil, nil, err
 	}
 	annotateImageRequestBody(body, resolvedModel, bucket)
-	size := util.Clean(body["size"])
+	size := mergeImageSizeWithResolution(util.Clean(body["size"]), util.Clean(body["image_resolution"]))
 	quality := util.Clean(body["quality"])
 	outputFormat := NormalizeImageOutputFormat(util.Clean(body["output_format"]))
 	outputCompression, hasOutputCompression := normalizedImageOutputCompression(body["output_compression"])
@@ -66,7 +66,6 @@ func (e *Engine) HandleImageGenerations(ctx context.Context, body map[string]any
 		request.OutputCompression = &outputCompression
 	}
 	applyImageToolOptionsToRequest(&request, ImageToolOptionsFromPayload(body))
-	request.ImageResolution = util.Clean(body["image_resolution"])
 	request = request.Normalized()
 	outputs, errCh := e.StreamImageOutputsWithPool(ctx, request)
 	if util.ToBool(body["stream"]) {
@@ -92,7 +91,7 @@ func (e *Engine) HandleImageEdits(ctx context.Context, body map[string]any, imag
 		return nil, nil, err
 	}
 	annotateImageRequestBody(body, resolvedModel, bucket)
-	size := util.Clean(body["size"])
+	size := mergeImageSizeWithResolution(util.Clean(body["size"]), util.Clean(body["image_resolution"]))
 	request := ConversationRequest{
 		Prompt:                 util.Clean(body["prompt"]),
 		Model:                  originalModel,
@@ -120,7 +119,6 @@ func (e *Engine) HandleImageEdits(ctx context.Context, body map[string]any, imag
 		request.PartialImages = &partialImages
 	}
 	applyImageToolOptionsToRequest(&request, ImageToolOptionsFromPayload(body))
-	request.ImageResolution = util.Clean(body["image_resolution"])
 	if SupportsImageOutputCompression(request.OutputFormat) {
 		if compression, ok := normalizedImageOutputCompression(body["output_compression"]); ok {
 			request.OutputCompression = &compression
@@ -531,7 +529,7 @@ func (e *Engine) ImageChatResponse(ctx context.Context, body map[string]any) (ma
 	if err != nil {
 		return nil, nil, err
 	}
-	size := util.Clean(body["size"])
+	size := mergeImageSizeWithResolution(util.Clean(body["size"]), util.Clean(body["image_resolution"]))
 	request := ConversationRequest{Prompt: prompt, Model: model, Messages: messages, N: n, Size: size, Quality: util.Clean(body["quality"]), Background: util.Clean(body["background"]), Moderation: util.Clean(body["moderation"]), Style: util.Clean(body["style"]), ResponseFormat: "b64_json", OwnerID: util.Clean(body["owner_id"]), OwnerName: util.Clean(body["owner_name"]), Images: EncodeImages(images), InputImageMask: responseImageMask(body["input_image_mask"]), AcquireImageOutputSlot: imageOutputSlotAcquirer(body), ChargeImageOutput: imageOutputCharger(body)}
 	if partialImages, ok := normalizedPositiveInt(body["partial_images"]); ok {
 		request.PartialImages = &partialImages
@@ -557,7 +555,7 @@ func (e *Engine) ImageChatEvents(ctx context.Context, body map[string]any) (<-ch
 			errOut <- err
 			return
 		}
-		size := util.Clean(body["size"])
+		size := mergeImageSizeWithResolution(util.Clean(body["size"]), util.Clean(body["image_resolution"]))
 		request := ConversationRequest{Prompt: prompt, Model: model, Messages: messages, N: n, Size: size, Quality: util.Clean(body["quality"]), Background: util.Clean(body["background"]), Moderation: util.Clean(body["moderation"]), Style: util.Clean(body["style"]), ResponseFormat: "b64_json", OwnerID: util.Clean(body["owner_id"]), OwnerName: util.Clean(body["owner_name"]), Images: EncodeImages(images), InputImageMask: responseImageMask(body["input_image_mask"]), AcquireImageOutputSlot: imageOutputSlotAcquirer(body), ChargeImageOutput: imageOutputCharger(body)}
 		if partialImages, ok := normalizedPositiveInt(body["partial_images"]); ok {
 			request.PartialImages = &partialImages
@@ -619,6 +617,8 @@ func applyImageToolOptionsToRequest(request *ConversationRequest, options ImageT
 	request.Background = options.Background
 	request.Moderation = options.Moderation
 	request.Style = options.Style
+	request.Watermark = options.Watermark
+	request.InputFidelity = options.InputFidelity
 	request.PartialImages = options.PartialImages
 	request.InputImageMask = options.InputImageMask
 }

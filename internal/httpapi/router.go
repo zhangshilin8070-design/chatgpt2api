@@ -56,6 +56,8 @@ func (a *App) routes() []appRoute {
 
 		exact("", "/api/announcements", a.handlePublicAnnouncements),
 		exact(http.MethodGet, "/api/app/latest-version", a.handleAppLatestVersion),
+		exact("", "/api/app/download/app", a.handleAppDownloadLatest),
+		exact("", "/api/admin/app-version", a.handleAdminAppVersion),
 		subtree("/api/admin/system", a.handleAdminSystem),
 		subtree("/api/admin/announcements", a.handleAdminAnnouncements),
 		subtree("/api/admin/roles", a.handleAdminRoles),

@@ -40,18 +40,20 @@ type OpenAIImagesClient struct {
 // UpstreamModel 取自 util.UpstreamModelForExternal(external)，由调用方负责
 // 在路由层完成对外模型→上游模型的解析。本结构不感知外部模型名。
 type OpenAIImagesRequest struct {
-	UpstreamModel  string
-	Prompt         string
-	N              int
-	Size           string
-	OutputFormat   string
-	// ImageResolution 来自 ConversationRequest.ImageResolution（生图页"分辨率"
-	// 下拉的 1080p / 2k / 4k / auto 预设）。仅 chat/completions 协议使用，
-	// 写入 image_size 字段（大写形态如 "4K"），与 newapi 等聚合服务对齐。
-	// 标准 OpenAI Images API 不读该字段。
-	ImageResolution string
-	InputImages    []ResponsesInputImage // 用于 edits
-	InputImageMask *ResponsesInputImage  // 用于 edits（可选）
+	UpstreamModel     string
+	Prompt            string
+	N                 int
+	Size              string
+	OutputFormat      string
+	OutputCompression *int
+	Quality           string
+	Background        string
+	Moderation        string
+	Watermark         string // 原样透传（IMAGE-API.local.md §4 扩展字段）
+	ResponseFormat    string // 仅当外部显式传 "url" 时下发；否则保持 b64_json
+	InputImages       []ResponsesInputImage // 用于 edits
+	InputImageMask    *ResponsesInputImage  // 用于 edits（可选）
+	InputFidelity     string                // edits 专属，原样透传
 }
 
 // OpenAIImagesResult 是 OpenAI Images API 响应的归一化形态。
@@ -145,16 +147,32 @@ func (c *OpenAIImagesClient) Generate(ctx context.Context, req OpenAIImagesReque
 	payload := openaiImagesGenerationDTO{
 		Model:          req.UpstreamModel,
 		Prompt:         req.Prompt,
-		ResponseFormat: openaiImagesResponseFormatB64JSON,
+		ResponseFormat: resolveOpenAIImagesResponseFormat(req.ResponseFormat),
 	}
 	if req.N >= 1 {
 		payload.N = req.N
 	}
-	if size := strings.TrimSpace(req.Size); size != "" {
+	if size := normalizeOpenAIImagesSize(req.Size); size != "" {
 		payload.Size = size
 	}
 	if format := strings.TrimSpace(req.OutputFormat); format != "" {
 		payload.OutputFormat = format
+	}
+	if quality := normalizeOpenAIImagesQuality(req.Quality); quality != "" {
+		payload.Quality = quality
+	}
+	if background := normalizeOpenAIImagesBackground(req.Background); background != "" {
+		payload.Background = background
+	}
+	if moderation := normalizeOpenAIImagesModeration(req.Moderation); moderation != "" {
+		payload.Moderation = moderation
+	}
+	if watermark := strings.TrimSpace(req.Watermark); watermark != "" {
+		payload.Watermark = watermark
+	}
+	if req.OutputCompression != nil && supportsOpenAIImagesOutputCompression(req.OutputFormat) {
+		v := clampOpenAIImagesCompression(*req.OutputCompression)
+		payload.OutputCompression = &v
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -202,17 +220,48 @@ func (c *OpenAIImagesClient) Edit(ctx context.Context, req OpenAIImagesRequest) 
 			return nil, fmt.Errorf("write multipart n: %w", err)
 		}
 	}
-	if size := strings.TrimSpace(req.Size); size != "" {
+	if size := normalizeOpenAIImagesSize(req.Size); size != "" {
 		if err := writer.WriteField("size", size); err != nil {
 			return nil, fmt.Errorf("write multipart size: %w", err)
 		}
 	}
-	if err := writer.WriteField("response_format", openaiImagesResponseFormatB64JSON); err != nil {
+	if err := writer.WriteField("response_format", resolveOpenAIImagesResponseFormat(req.ResponseFormat)); err != nil {
 		return nil, fmt.Errorf("write multipart response_format: %w", err)
 	}
 	if format := strings.TrimSpace(req.OutputFormat); format != "" {
 		if err := writer.WriteField("output_format", format); err != nil {
 			return nil, fmt.Errorf("write multipart output_format: %w", err)
+		}
+	}
+	if quality := normalizeOpenAIImagesQuality(req.Quality); quality != "" {
+		if err := writer.WriteField("quality", quality); err != nil {
+			return nil, fmt.Errorf("write multipart quality: %w", err)
+		}
+	}
+	if background := normalizeOpenAIImagesBackground(req.Background); background != "" {
+		if err := writer.WriteField("background", background); err != nil {
+			return nil, fmt.Errorf("write multipart background: %w", err)
+		}
+	}
+	if moderation := normalizeOpenAIImagesModeration(req.Moderation); moderation != "" {
+		if err := writer.WriteField("moderation", moderation); err != nil {
+			return nil, fmt.Errorf("write multipart moderation: %w", err)
+		}
+	}
+	if watermark := strings.TrimSpace(req.Watermark); watermark != "" {
+		if err := writer.WriteField("watermark", watermark); err != nil {
+			return nil, fmt.Errorf("write multipart watermark: %w", err)
+		}
+	}
+	if inputFidelity := strings.TrimSpace(req.InputFidelity); inputFidelity != "" {
+		if err := writer.WriteField("input_fidelity", inputFidelity); err != nil {
+			return nil, fmt.Errorf("write multipart input_fidelity: %w", err)
+		}
+	}
+	if req.OutputCompression != nil && supportsOpenAIImagesOutputCompression(req.OutputFormat) {
+		v := clampOpenAIImagesCompression(*req.OutputCompression)
+		if err := writer.WriteField("output_compression", strconv.Itoa(v)); err != nil {
+			return nil, fmt.Errorf("write multipart output_compression: %w", err)
 		}
 	}
 
@@ -325,8 +374,8 @@ func (c *OpenAIImagesClient) EditViaChat(ctx context.Context, req OpenAIImagesRe
 // image_size / size / aspect_ratio / extra_body / generation_config 等所有
 // 顶层字段（默认输出 1408×768），唯一能控制比例的渠道是把比例提示写进
 // prompt 文本（例如 "Portrait 9:16: ..."、"Square 1:1: ..."）。因此本函数
-// 不再下发 image_size，而是把 ConversationRequest.Size / ImageResolution
-// 翻译为 prompt 前缀（仅 chat 协议；标准 OpenAI Images API 仍按字段下发）。
+// 不再下发 image_size，而是把 ConversationRequest.Size 翻译为 prompt 前缀
+// （仅 chat 协议；标准 OpenAI Images API 仍按字段下发）。
 //
 // 同步等待完整响应（不引入 stream / SSE）：调用方仍按"提交一次拿一次结果"
 // 的语义在 runOpenAIImagesCandidate 里跑跨账号轮询。
@@ -361,14 +410,14 @@ func buildOpenAIChatPayload(req OpenAIImagesRequest, references []ResponsesInput
 	return payload
 }
 
-// decoratePromptWithSizeHint 把 OpenAIImagesRequest 上的尺寸字段翻译为
-// prompt 前缀，用于 newapi gemini 等 chat-completions 上游（这些上游忽略
-// JSON 顶层 size 字段，但响应 prompt 中的比例描述）。
+// decoratePromptWithSizeHint 把 OpenAIImagesRequest.Size 翻译为 prompt 前缀，
+// 用于 newapi gemini 等 chat-completions 上游（这些上游忽略 JSON 顶层 size
+// 字段，但响应 prompt 中的比例描述）。
 //
 // 翻译规则：
 //   - Size 是比例形态（"1:1" / "16:9" / "9:16" / 其它带 ":" 的）→ 直接当 aspect ratio
 //   - Size 是像素形态（"1024x1024" / "1024X1024"）→ 解析为比例
-//   - ImageResolution（1080p / 2k / 4k）→ 不能控制实际像素，但作为 quality 提示加入
+//   - 其它形态（分档预设 1080p/2k/4k 或空 / auto）→ 不加前缀
 //
 // 实测 1:1 → 1024×1024，9:16 → 768×1376，16:9 → 1376×768，与 prompt 前缀
 // 行为一致；image_size / size / extra_body 等 16 种字段全部被忽略。
@@ -708,6 +757,17 @@ func classifyOpenAIImagesError(status int, body []byte) error {
 			Message: firstNonEmptyMessage(message, "rate limited"),
 			Raw:     body,
 		}
+	case status == 524 || status == 522:
+		// Cloudflare 524（上游响应超过 100s）、522（连接超时）：上游已经
+		// 主动放弃，跟客户端 timeout 等价，不应消耗 transient 重试预算。
+		// 与 OpenAIImagesErrorTimeout 同处置：当前账号标限流，换下一账号；
+		// 池子空了就直接 exhausted 返回更准确的 timeout 提示。
+		return &OpenAIImagesError{
+			Kind:    OpenAIImagesErrorTimeout,
+			Status:  status,
+			Message: firstNonEmptyMessage(message, "upstream timed out (cloudflare 524/522)"),
+			Raw:     body,
+		}
 	case status >= 500 && status < 600:
 		return &OpenAIImagesError{
 			Kind:    OpenAIImagesErrorTransient,
@@ -735,14 +795,31 @@ const (
 )
 
 // openaiImagesGenerationDTO 是发送给 /v1/images/generations 的请求体 DTO。
-// 仅按当前 OpenAI Images API 字段集编码，不写多版本兼容路径。
+// 字段集对齐 IMAGE-API.local.md §4（OpenAI Images API 兼容形态），不写多版本
+// 兼容路径。
+//
+// 字段保留约束：
+//   - quality：low / medium / high / auto
+//   - background：原样透传（gpt-image-2 起支持 transparent/opaque/auto 等）
+//   - moderation：原样透传
+//   - response_format：默认 b64_json；当外部显式传 url 时下发 url（需注意：
+//     后端 openaiImagesResponseDTO 同时识别 b64_json 与 url 字段）
+//   - output_compression：0~100 范围，不区分 output_format
+//   - watermark：原样透传（gpt-image 系扩展字段）
+//   - 不包含 style：dall-e-3 残留字段，gpt-image-1/2 不接受
+//   - 不包含 partial_images：Responses streaming 专属
 type openaiImagesGenerationDTO struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	N              int    `json:"n,omitempty"`
-	Size           string `json:"size,omitempty"`
-	ResponseFormat string `json:"response_format"`
-	OutputFormat   string `json:"output_format,omitempty"`
+	Model             string `json:"model"`
+	Prompt            string `json:"prompt"`
+	N                 int    `json:"n,omitempty"`
+	Size              string `json:"size,omitempty"`
+	ResponseFormat    string `json:"response_format"`
+	OutputFormat      string `json:"output_format,omitempty"`
+	OutputCompression *int   `json:"output_compression,omitempty"`
+	Quality           string `json:"quality,omitempty"`
+	Background        string `json:"background,omitempty"`
+	Moderation        string `json:"moderation,omitempty"`
+	Watermark         string `json:"watermark,omitempty"`
 }
 
 // openaiImagesResponseDTO 是 /v1/images/generations 与 /v1/images/edits 的

@@ -14,6 +14,7 @@ docs/*
 !docs/image-generation-api.md
 !docs/user-quota-allocation-requirements.md
 !docs/feature-list.md
+!docs/app-release.md
 !jshook/docs/
 
 .idea
@@ -41,6 +42,9 @@ git_cache/
 # Local deploy workspace and one-off scripts (contain real credentials)
 work-deploy/
 test/deploy_dual_bucket.py
+test/inspect_*.sh
+test/dump_*.sh
+*.local.md
 
 # IDE / agent private config (contains local absolute paths)
 .kiro/
@@ -55,3 +59,8 @@ android-image-app/
 # APK / release binaries
 *.apk
 release-files/
+
+# Android signing key store paths/passwords (per-machine)
+keystore.properties
+*.keystore
+*.jks

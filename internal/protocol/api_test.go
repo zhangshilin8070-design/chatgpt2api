@@ -180,9 +180,9 @@ func TestNormalizeImageGenerationSizeTiers(t *testing.T) {
 	}{
 		{size: "", want: ""},
 		{size: "16:9", want: "16:9"},
-		{size: "1080p", want: "1080x1080"},
-		{size: " 2K ", want: "2048x2048"},
-		{size: "4k", want: "2880x2880"},
+		{size: "1080p", want: "1080p"},
+		{size: " 2K ", want: "2k"},
+		{size: "4k", want: "4k"},
 		{size: "1536x2048", want: "1536x2048"},
 	}
 
@@ -195,20 +195,23 @@ func TestNormalizeImageGenerationSizeTiers(t *testing.T) {
 	}
 }
 
-func TestConversationRequestNormalizesResolutionTierSize(t *testing.T) {
+func TestConversationRequestKeepsResolutionTierVerbatim(t *testing.T) {
 	request := ConversationRequest{
 		Model: "gpt-5.5",
 		Size:  "2k",
 	}.Normalized()
-	if request.Size != "2048x2048" {
-		t.Fatalf("Normalized() size = %q, want 2048x2048", request.Size)
+	if request.Size != "2k" {
+		t.Fatalf("Normalized() size = %q, want 2k (tier preset kept verbatim, no pixel expansion)", request.Size)
 	}
 }
 
-func TestBuildImagePromptNormalizesResolutionTierHint(t *testing.T) {
+func TestBuildImagePromptIncludesResolutionTierHint(t *testing.T) {
 	prompt := BuildImagePrompt("画一张城市海报", "2k", "")
-	if !strings.Contains(prompt, "2048 x 2048") {
-		t.Fatalf("BuildImagePrompt() did not expand 2k tier to exact pixels: %s", prompt)
+	if !strings.Contains(prompt, "2K") {
+		t.Fatalf("BuildImagePrompt() should mention 2K tier hint: %s", prompt)
+	}
+	if strings.Contains(prompt, "2048") {
+		t.Fatalf("BuildImagePrompt() should not expand 2k tier into explicit pixels: %s", prompt)
 	}
 }
 
@@ -621,5 +624,45 @@ func TestMergeSystemUsesCompactToolRuleForClaudeCode(t *testing.T) {
 	}
 	if !strings.Contains(text, "Tool output adapter") || !strings.Contains(text, "<tool_calls>") {
 		t.Fatalf("MergeSystem() missing compact XML rule: %q", text)
+	}
+}
+
+func TestMergeImageSizeWithResolution(t *testing.T) {
+	cases := []struct {
+		name       string
+		size       string
+		resolution string
+		want       string
+	}{
+		// 比例 + 档位 → 具体像素，命中 Axiom §6 计价档
+		{"9:16 + 4k", "9:16", "4k", "2160x3840"},
+		{"16:9 + 4k", "16:9", "4k", "3840x2160"},
+		{"1:1 + 4k", "1:1", "4k", "3840x3840"},
+		{"9:16 + 2k", "9:16", "2k", "1152x2048"},
+		{"16:9 + 2k", "16:9", "2k", "2048x1152"},
+		{"9:16 + 1080p", "9:16", "1080p", "1080x1920"},
+		{"16:9 + 1080p", "16:9", "1080p", "1920x1080"},
+
+		// 只填档位（无比例）→ 档位字面值，Axiom 自己识别为 1k/2k/4k 默认正方形
+		{"empty + 4k", "", "4k", "4k"},
+		{"empty + 2k", "", "2k", "2k"},
+		{"empty + 1080p", "", "1080p", "1080p"},
+
+		// 显式像素 / 档位字面 + 任意分辨率 → 不动 size
+		{"1024x1024 + 4k", "1024x1024", "4k", "1024x1024"},
+		{"2k + 4k", "2k", "4k", "2k"},
+
+		// auto / 空分辨率 → size 原样
+		{"9:16 + auto", "9:16", "auto", "9:16"},
+		{"9:16 + empty", "9:16", "", "9:16"},
+		{"empty + auto", "", "auto", ""},
+		{"empty + empty", "", "", ""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mergeImageSizeWithResolution(tt.size, tt.resolution); got != tt.want {
+				t.Fatalf("mergeImageSizeWithResolution(%q, %q) = %q, want %q", tt.size, tt.resolution, got, tt.want)
+			}
+		})
 	}
 }

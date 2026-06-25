@@ -1,4 +1,4 @@
-package service
+﻿package service
 
 import (
 	"archive/tar"
@@ -38,7 +38,7 @@ func TestCompareVersions(t *testing.T) {
 
 func TestValidateUpdateDownloadURL(t *testing.T) {
 	for _, raw := range []string{
-		"https://github.com/ZyphrZero/chatgpt2api/releases/download/v1.0.0/chatgpt2api.tar.gz",
+		"https://github.com/zhangshilin8070-design/chatgpt2api/releases/download/v1.0.0/chatgpt2api.tar.gz",
 		"https://objects.githubusercontent.com/github-production-release-asset/example",
 	} {
 		if err := validateUpdateDownloadURL(raw); err != nil {
@@ -46,7 +46,7 @@ func TestValidateUpdateDownloadURL(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{
-		"http://github.com/ZyphrZero/chatgpt2api/releases/download/v1.0.0/chatgpt2api.tar.gz",
+		"http://github.com/zhangshilin8070-design/chatgpt2api/releases/download/v1.0.0/chatgpt2api.tar.gz",
 		"https://example.com/chatgpt2api.tar.gz",
 	} {
 		if err := validateUpdateDownloadURL(raw); err == nil {
@@ -236,7 +236,7 @@ func TestSafeExtractPathRejectsTraversal(t *testing.T) {
 }
 
 func TestDownloadFileNameIgnoresQuery(t *testing.T) {
-	raw := "https://github.com/ZyphrZero/chatgpt2api/releases/download/v1.0.0/chatgpt2api.tar.gz?download=1"
+	raw := "https://github.com/zhangshilin8070-design/chatgpt2api/releases/download/v1.0.0/chatgpt2api.tar.gz?download=1"
 	if got := downloadFileName(raw); got != "chatgpt2api.tar.gz" {
 		t.Fatalf("downloadFileName(%q) = %q", raw, got)
 	}
@@ -258,7 +258,7 @@ func TestFetchLatestReleaseUsesGitHubToken(t *testing.T) {
 			"tag_name": "v1.2.0",
 			"name": "v1.2.0",
 			"body": "release notes",
-			"html_url": "https://github.com/ZyphrZero/chatgpt2api/releases/tag/v1.2.0",
+			"html_url": "https://github.com/zhangshilin8070-design/chatgpt2api/releases/tag/v1.2.0",
 			"published_at": "2026-01-01T00:00:00Z",
 			"assets": []
 		}`))

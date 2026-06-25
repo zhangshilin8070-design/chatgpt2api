@@ -1,4 +1,4 @@
-package httpapi
+﻿package httpapi
 
 import (
 	"bytes"
@@ -213,7 +213,7 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 
 func TestAdminSystemCheckUpdates(t *testing.T) {
 	releaseAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/ZyphrZero/chatgpt2api/releases/latest" {
+		if r.URL.Path != "/repos/zhangshilin8070-design/chatgpt2api/releases/latest" {
 			http.NotFound(w, r)
 			return
 		}
@@ -222,11 +222,11 @@ func TestAdminSystemCheckUpdates(t *testing.T) {
 			"tag_name": "v1.2.0",
 			"name": "v1.2.0",
 			"body": "release notes",
-			"html_url": "https://github.com/ZyphrZero/chatgpt2api/releases/tag/v1.2.0",
+			"html_url": "https://github.com/zhangshilin8070-design/chatgpt2api/releases/tag/v1.2.0",
 			"published_at": "2026-01-01T00:00:00Z",
 			"assets": [
-				{"name":"chatgpt2api_1.2.0_linux_amd64.tar.gz","browser_download_url":"https://github.com/ZyphrZero/chatgpt2api/releases/download/v1.2.0/chatgpt2api_1.2.0_linux_amd64.tar.gz","size":123},
-				{"name":"checksums.txt","browser_download_url":"https://github.com/ZyphrZero/chatgpt2api/releases/download/v1.2.0/checksums.txt","size":64}
+				{"name":"chatgpt2api_1.2.0_linux_amd64.tar.gz","browser_download_url":"https://github.com/zhangshilin8070-design/chatgpt2api/releases/download/v1.2.0/chatgpt2api_1.2.0_linux_amd64.tar.gz","size":123},
+				{"name":"checksums.txt","browser_download_url":"https://github.com/zhangshilin8070-design/chatgpt2api/releases/download/v1.2.0/checksums.txt","size":64}
 			]
 		}`))
 	}))
@@ -4169,139 +4169,169 @@ func encodeHTTPTestPNG(file interface {
 	return png.Encode(file, img)
 }
 
-// TestAppLatestVersionDefault 验证 web-app-parity-iteration Requirement
-// 5.1 / 5.2 / 5.8 + NFR 4.1：在没有任何 settings.env override 的情况下，
-//
-//  1. loadAppVersionMetadata 必须返回 defaultAppVersionMetadata 全字段；
-//  2. GET /api/app/latest-version handler 必须 200 + Content-Type 为
-//     application/json + Cache-Control: no-store + 响应体反序列化等于
-//     defaultAppVersionMetadata，五个字段（versionCode / versionName /
-//     downloadUrl / releaseNotes / minSupportedVersionCode）一个不漏。
-//
-// 测试期间显式 unset 五个 APP_LATEST_* override key，避免 CI / 开发机
-// shell 中的残留 ENV 污染默认路径断言。
-func TestAppLatestVersionDefault(t *testing.T) {
-	emptyLookup := func(string) (string, bool) { return "", false }
-	loaded, err := loadAppVersionMetadata(emptyLookup)
-	if err != nil {
-		t.Fatalf("loadAppVersionMetadata(empty) error = %v", err)
-	}
-	if loaded != defaultAppVersionMetadata {
-		t.Fatalf("loadAppVersionMetadata(empty) = %#v, want %#v", loaded, defaultAppVersionMetadata)
-	}
-
-	for _, key := range []string{
-		"APP_LATEST_VERSION_CODE",
-		"APP_LATEST_VERSION_NAME",
-		"APP_LATEST_DOWNLOAD_URL",
-		"APP_LATEST_RELEASE_NOTES",
-		"APP_LATEST_MIN_SUPPORTED_VERSION_CODE",
-	} {
-		unsetTestEnv(t, key)
-	}
-
+// TestAppLatestVersionUninitialized 验证未配置 app-version.json 时
+// /api/app/latest-version 返回 503 + 提示信息，不退回任何硬编码默认值。
+// 同样断言 GET /api/app/download/latest 也返回 503。
+func TestAppLatestVersionUninitialized(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/app/latest-version", nil)
-	res := httptest.NewRecorder()
-	app.Handler().ServeHTTP(res, req)
-	if res.Code != http.StatusOK {
-		t.Fatalf("/api/app/latest-version status = %d body = %s", res.Code, res.Body.String())
-	}
-	if ct := res.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Fatalf("Content-Type = %q, want to contain application/json", ct)
-	}
-	if cc := res.Header().Get("Cache-Control"); cc != "no-store" {
-		t.Fatalf("Cache-Control = %q, want %q", cc, "no-store")
-	}
-
-	var body AppVersionMetadata
-	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
-		t.Fatalf("response json: %v body = %s", err, res.Body.String())
-	}
-	if body != defaultAppVersionMetadata {
-		t.Fatalf("response body = %#v, want default %#v", body, defaultAppVersionMetadata)
-	}
-
-	// 同时校验 raw JSON 中确实存在五个字段名（防御 omitempty / 字段重命名
-	// 之类的回归），不依赖结构体反序列化的容错。
-	var raw map[string]any
-	if err := json.Unmarshal(res.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("response raw json: %v", err)
-	}
-	for _, field := range []string{"versionCode", "versionName", "downloadUrl", "releaseNotes", "minSupportedVersionCode"} {
-		if _, ok := raw[field]; !ok {
-			t.Fatalf("response missing field %q: %s", field, res.Body.String())
+	for _, path := range []string{"/api/app/latest-version", "/api/app/download/app"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		res := httptest.NewRecorder()
+		app.Handler().ServeHTTP(res, req)
+		if res.Code != http.StatusServiceUnavailable {
+			t.Fatalf("GET %s status = %d, want 503 body=%s", path, res.Code, res.Body.String())
+		}
+		if !strings.Contains(res.Body.String(), "PUT /api/admin/app-version") {
+			t.Fatalf("GET %s body should mention PUT bootstrap path, got %s", path, res.Body.String())
 		}
 	}
 }
 
-// TestAppLatestVersionOverrideInvalidPanics 校验 Requirement 5.3 / NFR
-// 6.2 的 fail-fast 启动期语义：settings.env override 任一字段非法都
-// 必须阻止服务启动。loadAppVersionMetadata 当前以 error 形式向上传递
-// 错误，由 NewApp 包装后回到 internal/main.go::log.Fatalf 终止进程；
-// 测试名沿用 spec 中"启动期 panic"的语义命名，但实际断言走 error
-// 路径，不引入 recover() 等额外语言机制。
-//
-// 覆盖等价类：
-//   - VersionCode：非整数 / 负数 / 0 / 空串 / 仅空白
-//   - VersionName：空串 / 仅空白
-//   - DownloadURL：缺 scheme / ftp scheme / 空串
-//   - MinSupportedVersionCode：非整数 / 负数 / 0
-//   - MinSupportedVersionCode > VersionCode 的越界关系
-//
-// 任一错误路径下，loadAppVersionMetadata 必须同时返回零值结构体——
-// 不允许部分应用 override，避免半截配置进入 App.appVersion 字段。
-func TestAppLatestVersionOverrideInvalidPanics(t *testing.T) {
-	const (
-		keyCode    = "APP_LATEST_VERSION_CODE"
-		keyName    = "APP_LATEST_VERSION_NAME"
-		keyURL     = "APP_LATEST_DOWNLOAD_URL"
-		keyMinCode = "APP_LATEST_MIN_SUPPORTED_VERSION_CODE"
-	)
+// TestAppVersionLifecycle 串联完整发布周期：管理员 PUT 发布元数据 →
+// 公开 latest-version 接口立即返回新元数据 → 固定下载链接 302 跳到 URL
+// → 管理员 PUT 第二次发布 → 旧元数据被替换。
+func TestAppVersionLifecycle(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
 
-	cases := []struct {
-		name      string
-		overrides map[string]string
-	}{
-		{name: "version_code_non_integer", overrides: map[string]string{keyCode: "abc"}},
-		{name: "version_code_negative", overrides: map[string]string{keyCode: "-1"}},
-		{name: "version_code_zero", overrides: map[string]string{keyCode: "0"}},
-		{name: "version_code_empty", overrides: map[string]string{keyCode: ""}},
-		{name: "version_code_whitespace", overrides: map[string]string{keyCode: "  "}},
+	adminToken := loginTestAdmin(t, app)
 
-		{name: "version_name_empty", overrides: map[string]string{keyName: ""}},
-		{name: "version_name_whitespace", overrides: map[string]string{keyName: "   "}},
+	first := AppVersionMetadata{
+		VersionCode:             7,
+		VersionName:             "3.0.4",
+		DownloadURL:             "https://example.com/download/app-3.0.4.apk",
+		ReleaseNotes:            "first publish",
+		MinSupportedVersionCode: 1,
+	}
+	putAppVersion(t, app, adminToken, first, http.StatusOK)
 
-		{name: "download_url_no_scheme", overrides: map[string]string{keyURL: "example.com/download/app.apk"}},
-		{name: "download_url_ftp_scheme", overrides: map[string]string{keyURL: "ftp://example.com/download/app.apk"}},
-		{name: "download_url_empty", overrides: map[string]string{keyURL: ""}},
-
-		{name: "min_supported_version_code_non_integer", overrides: map[string]string{keyMinCode: "abc"}},
-		{name: "min_supported_version_code_negative", overrides: map[string]string{keyMinCode: "-2"}},
-		{name: "min_supported_version_code_zero", overrides: map[string]string{keyMinCode: "0"}},
-
-		{name: "min_supported_exceeds_latest_version_code", overrides: map[string]string{
-			keyCode:    "5",
-			keyMinCode: "9",
-		}},
+	// 公开 latest-version：200 + 内容等于刚发布的版本。
+	pubRes := httptest.NewRecorder()
+	app.Handler().ServeHTTP(pubRes, httptest.NewRequest(http.MethodGet, "/api/app/latest-version", nil))
+	if pubRes.Code != http.StatusOK {
+		t.Fatalf("latest-version status = %d body=%s", pubRes.Code, pubRes.Body.String())
+	}
+	if cc := pubRes.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("latest-version Cache-Control = %q, want no-store", cc)
+	}
+	var got AppVersionMetadata
+	if err := json.Unmarshal(pubRes.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode latest-version body: %v", err)
+	}
+	if got != first {
+		t.Fatalf("latest-version body = %#v, want %#v", got, first)
 	}
 
+	// 固定下载链接：302 跳到 metadata.downloadUrl。
+	dlRes := httptest.NewRecorder()
+	app.Handler().ServeHTTP(dlRes, httptest.NewRequest(http.MethodGet, "/api/app/download/app", nil))
+	if dlRes.Code != http.StatusFound {
+		t.Fatalf("download/app status = %d, want 302", dlRes.Code)
+	}
+	if loc := dlRes.Header().Get("Location"); loc != first.DownloadURL {
+		t.Fatalf("download/app Location = %q, want %q", loc, first.DownloadURL)
+	}
+
+	// 二次发布：替换全部字段。
+	second := AppVersionMetadata{
+		VersionCode:             8,
+		VersionName:             "3.0.5",
+		DownloadURL:             "https://example.com/download/app-3.0.5.apk",
+		ReleaseNotes:            "second publish",
+		MinSupportedVersionCode: 6,
+	}
+	putAppVersion(t, app, adminToken, second, http.StatusOK)
+	pubRes2 := httptest.NewRecorder()
+	app.Handler().ServeHTTP(pubRes2, httptest.NewRequest(http.MethodGet, "/api/app/latest-version", nil))
+	var got2 AppVersionMetadata
+	if err := json.Unmarshal(pubRes2.Body.Bytes(), &got2); err != nil {
+		t.Fatalf("decode second body: %v", err)
+	}
+	if got2 != second {
+		t.Fatalf("latest-version after second PUT = %#v, want %#v", got2, second)
+	}
+}
+
+// TestAppVersionAdminAuth 验证 /api/admin/app-version 必须管理员鉴权：
+// 匿名 401，普通 user 403。
+func TestAppVersionAdminAuth(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	anonGet := httptest.NewRecorder()
+	app.Handler().ServeHTTP(anonGet, httptest.NewRequest(http.MethodGet, "/api/admin/app-version", nil))
+	if anonGet.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous GET status = %d, want 401", anonGet.Code)
+	}
+
+	anonPut := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/app-version", strings.NewReader(`{"versionCode":1}`))
+	app.Handler().ServeHTTP(anonPut, req)
+	if anonPut.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous PUT status = %d, want 401", anonPut.Code)
+	}
+}
+
+// TestAppVersionInvalidBody 覆盖关键字段非法的拒绝路径。
+func TestAppVersionInvalidBody(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	token := loginTestAdmin(t, app)
+
+	cases := []struct {
+		name string
+		body AppVersionMetadata
+	}{
+		{"version_code_zero", AppVersionMetadata{VersionCode: 0, VersionName: "1.0", DownloadURL: "https://x.example/a.apk", MinSupportedVersionCode: 1}},
+		{"version_name_blank", AppVersionMetadata{VersionCode: 1, VersionName: "  ", DownloadURL: "https://x.example/a.apk", MinSupportedVersionCode: 1}},
+		{"download_url_ftp", AppVersionMetadata{VersionCode: 1, VersionName: "1.0", DownloadURL: "ftp://x/a.apk", MinSupportedVersionCode: 1}},
+		{"download_url_no_scheme", AppVersionMetadata{VersionCode: 1, VersionName: "1.0", DownloadURL: "example.com/a.apk", MinSupportedVersionCode: 1}},
+		{"min_supported_zero", AppVersionMetadata{VersionCode: 1, VersionName: "1.0", DownloadURL: "https://x.example/a.apk", MinSupportedVersionCode: 0}},
+		{"min_supported_exceeds", AppVersionMetadata{VersionCode: 3, VersionName: "1.0", DownloadURL: "https://x.example/a.apk", MinSupportedVersionCode: 9}},
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			overrides := tc.overrides
-			lookup := func(key string) (string, bool) {
-				value, ok := overrides[key]
-				return value, ok
-			}
-			metadata, err := loadAppVersionMetadata(lookup)
-			if err == nil {
-				t.Fatalf("loadAppVersionMetadata(%v) succeeded; want startup error (NewApp would surface to log.Fatalf)", overrides)
-			}
-			if metadata != (AppVersionMetadata{}) {
-				t.Fatalf("loadAppVersionMetadata returned non-zero metadata on error: %#v", metadata)
-			}
+			putAppVersion(t, app, token, tc.body, http.StatusBadRequest)
 		})
+	}
+}
+
+// loginTestAdmin returns a session token for the bootstrap admin.
+func loginTestAdmin(t *testing.T, app *App) string {
+	t.Helper()
+	loginBody := fmt.Sprintf(`{"username":%q,"password":%q}`, testAdminUsername, testAdminPassword)
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("admin login status = %d body=%s", res.Code, res.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode admin login: %v", err)
+	}
+	token, _ := body["token"].(string)
+	if token == "" {
+		t.Fatalf("admin login token empty: %#v", body)
+	}
+	return token
+}
+
+func putAppVersion(t *testing.T, app *App, token string, metadata AppVersionMetadata, wantStatus int) {
+	t.Helper()
+	payload, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/app-version", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != wantStatus {
+		t.Fatalf("PUT app-version status = %d want %d body=%s", res.Code, wantStatus, res.Body.String())
 	}
 }

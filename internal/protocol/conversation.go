@@ -13,6 +13,8 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -113,16 +115,13 @@ type ConversationRequest struct {
 	OutputFormat      string
 	OutputCompression *int
 	PartialImages     *int
-	// ImageResolution 是生图页"分辨率"下拉的预设值（1080p / 2k / 4k / auto），
-	// 与 ConversationRequest.Size（像素形态如 1024x1024）并存——下游 chat
-	// completions 协议聚合服务（newapi gemini）按 image_size = 4K / 2K / 1080P
-	// 决定输出尺寸。仅在 OpenAI 协议出图通路上有效，ChatGPT 通路不读该字段。
-	ImageResolution        string
-	ResponseFormat         string
-	BaseURL                string
-	OwnerID                string
-	OwnerName              string
-	MessageAsError         bool
+	Watermark         string // 透传给 OpenAI Images API（IMAGE-API.local.md §4 扩展字段）
+	InputFidelity     string // edits 专属，透传给 OpenAI Images API
+	ResponseFormat    string
+	BaseURL           string
+	OwnerID           string
+	OwnerName         string
+	MessageAsError    bool
 	AcquireImageOutputSlot ImageOutputSlotAcquirer
 	ChargeImageOutput      ImageOutputCharger
 }
@@ -170,6 +169,8 @@ type ImageToolOptions struct {
 	Background     string
 	Moderation     string
 	Style          string
+	Watermark      string // 透传给 OpenAI Images API（gpt-image 系扩展字段）
+	InputFidelity  string // edits 专属
 	PartialImages  *int
 	InputImageMask string
 }
@@ -191,6 +192,8 @@ func ImageToolOptionsFromPayload(payload map[string]any) ImageToolOptions {
 		Background:     util.Clean(payload["background"]),
 		Moderation:     util.Clean(payload["moderation"]),
 		Style:          util.Clean(payload["style"]),
+		Watermark:      util.Clean(payload["watermark"]),
+		InputFidelity:  util.Clean(payload["input_fidelity"]),
 		InputImageMask: responseImageMask(payload["input_image_mask"]),
 	}
 	if partialImages, ok := normalizedPositiveInt(payload["partial_images"]); ok {
@@ -874,12 +877,18 @@ func (e *Engine) executeOpenAIImagesAttempt(ctx context.Context, out chan<- Imag
 	}
 
 	apiReq := backend.OpenAIImagesRequest{
-		UpstreamModel:   candidate.upstreamModel,
-		Prompt:          request.Prompt,
-		N:               1,
-		Size:            request.Size,
-		OutputFormat:    request.OutputFormat,
-		ImageResolution: request.ImageResolution,
+		UpstreamModel:     candidate.upstreamModel,
+		Prompt:            request.Prompt,
+		N:                 1,
+		Size:              request.Size,
+		OutputFormat:      request.OutputFormat,
+		OutputCompression: request.OutputCompression,
+		Quality:           request.Quality,
+		Background:        request.Background,
+		Moderation:        request.Moderation,
+		Watermark:         request.Watermark,
+		InputFidelity:     request.InputFidelity,
+		ResponseFormat:    request.ResponseFormat,
 	}
 	apiReq.InputImages = responsesInputImages(request.Images)
 	apiReq.InputImageMask = responsesInputImagePtr(request.InputImageMask)
@@ -909,6 +918,35 @@ func (e *Engine) executeOpenAIImagesAttempt(ctx context.Context, out chan<- Imag
 	}
 
 	backendOutputs := upstreamResult.ToImageOutputs(request.Model, index, request.N, util.UpstreamKindOpenAIAPI)
+	if e != nil && e.Logger != nil {
+		// 上游入参与返回字段并列记录，便于排查"size=4k 但实际拿到 2k 图"等
+		// 与上游响应一致性相关的问题（IMAGE-API.local.md §6：4k 是计价档，
+		// 实际像素由上游模型决定，可能仍为 2048）。
+		hasB64 := false
+		hasURL := false
+		hasRevised := false
+		if len(backendOutputs) > 0 && len(backendOutputs[0].Data) > 0 {
+			datum := backendOutputs[0].Data[0]
+			if v := util.Clean(datum["b64_json"]); v != "" {
+				hasB64 = true
+			}
+			if v := util.Clean(datum["url"]); v != "" {
+				hasURL = true
+			}
+			if v := util.Clean(datum["revised_prompt"]); v != "" {
+				hasRevised = true
+			}
+		}
+		e.Logger.Info("openai_images upstream returned",
+			"upstream_model", candidate.upstreamModel,
+			"size", apiReq.Size,
+			"output_format", apiReq.OutputFormat,
+			"n", len(backendOutputs),
+			"has_b64", hasB64,
+			"has_url", hasURL,
+			"has_revised_prompt", hasRevised,
+		)
+	}
 	if len(backendOutputs) == 0 {
 		message := "openai images upstream returned no image data"
 		e.OpenAIAccountReserver.MarkModelResult(reservation.AccountID, candidate.upstreamModel, false, message)
@@ -1431,14 +1469,25 @@ func (e *Engine) formatImageResultWithOptions(items []map[string]any, prompt, re
 	var data []map[string]any
 	for _, item := range items {
 		b64 := util.Clean(item["b64_json"])
-		if b64 == "" {
+		var imageBytes []byte
+		var err error
+		if b64 != "" {
+			imageBytes, err = base64.StdEncoding.DecodeString(b64)
+			if err != nil {
+				continue
+			}
+		} else if remoteURL := util.Clean(item["url"]); remoteURL != "" {
+			// 上游忽略 response_format=b64_json，直接返回 url 时下载本地落地。
+			// 由 Engine.Proxy 提供 HTTP 客户端；下载失败该 item 跳过，由调用
+			// 方在所有 item 都失败时报 undecodable。
+			imageBytes, err = e.downloadImageBytes(remoteURL)
+			if err != nil {
+				continue
+			}
+		} else {
 			continue
 		}
 		revised := firstNonEmpty(util.Clean(item["revised_prompt"]), prompt)
-		imageBytes, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil {
-			continue
-		}
 		itemOptions := options
 		if hasRequestedFormat {
 			itemOptions.Format = defaultFormat
@@ -1659,4 +1708,41 @@ func (e *Engine) writeImageOwnerMetadata(rel, ownerID, ownerName string) {
 
 func imageOwnerDocumentName(rel string) string {
 	return "image_metadata/" + filepath.ToSlash(rel) + ".json"
+}
+
+// downloadImageBytes 用 Engine.Proxy 提供的 HTTP 客户端下载远程图片 URL 的
+// 二进制数据。仅供 formatImageResultWithOptions 在上游忽略
+// response_format=b64_json 而直接返回 url 时回填使用。
+//
+// timeout 设置为 5 分钟（与 OpenAIImageBackendFactory 的 180s 同量级）。
+// 状态码非 2xx、Body 读取失败、字节数为 0 都视为下载失败，返回 error。
+func (e *Engine) downloadImageBytes(url string) ([]byte, error) {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return nil, fmt.Errorf("empty url")
+	}
+	var client = http.DefaultClient
+	if e != nil && e.Proxy != nil {
+		client = e.Proxy.HTTPClient(5 * time.Minute)
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build image url request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download image url: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("download image url returned status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read image url body: %w", err)
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("download image url returned empty body")
+	}
+	return body, nil
 }

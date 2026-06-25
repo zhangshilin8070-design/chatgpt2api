@@ -1,25 +1,31 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
-	"strconv"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+
+	"chatgpt2api/internal/service"
+	"chatgpt2api/internal/util"
 )
 
 // AppVersionMetadata 描述 Android 客户端的最新可用版本元数据。
 //
-// 字段语义对齐 web-app-parity-iteration Requirement 5.2：响应 JSON 形态为
+// 字段语义对齐 web-app-parity-iteration Requirement 5.2：
 //
 //	{ versionCode, versionName, downloadUrl, releaseNotes, minSupportedVersionCode }
 //
-// 数据来源严格固定为本文件中的默认常量 + settings.env override（通过
-// internal/config 启动期注入的进程 ENV 读取），不引入新存储后端。
-//
-// "No compatibility layers" 约定下：override 字段任何一项非法即在进程启动期
-// 报错（caller 通过 panic 终止启动），不回退到默认值，也不部分应用。
+// 唯一数据源是 DataDir/app-version.json；该文件由运维通过 PUT
+// /api/admin/app-version 写入，也可以手工编辑后由 mtime 热重载感知。
+// 没有任何编译期硬编码默认值——文件缺失或格式非法直接报错，避免
+// 把过期版本号悄悄发布给客户端（No compatibility layers）。
 type AppVersionMetadata struct {
 	VersionCode             int    `json:"versionCode"`
 	VersionName             string `json:"versionName"`
@@ -28,135 +34,308 @@ type AppVersionMetadata struct {
 	MinSupportedVersionCode int    `json:"minSupportedVersionCode"`
 }
 
-// 以下 5 个 settings.env override key 与 internal/config 设置项规范保持
-// 同样的「`APP_LATEST_*`」前缀风格；当任一 key 在进程 ENV 中存在时，对应
-// 字段被覆盖。空字符串视为「显式置空」并按字段规则校验——绝大多数字段
-// 不允许显式空字符串（参见 loadAppVersionMetadata）。
-const (
-	envKeyAppLatestVersionCode             = "APP_LATEST_VERSION_CODE"
-	envKeyAppLatestVersionName             = "APP_LATEST_VERSION_NAME"
-	envKeyAppLatestDownloadURL             = "APP_LATEST_DOWNLOAD_URL"
-	envKeyAppLatestReleaseNotes            = "APP_LATEST_RELEASE_NOTES"
-	envKeyAppLatestMinSupportedVersionCode = "APP_LATEST_MIN_SUPPORTED_VERSION_CODE"
-)
+// appVersionFileName 是 DataDir 下的元数据文件名。
+const appVersionFileName = "app-version.json"
 
-// defaultAppVersionMetadata 定义当前发布版本的元数据默认值。
+// appVersionStore 维护一份 mtime 感知的 AppVersionMetadata 缓存。
 //
-// 与 android-image-app/app/build.gradle.kts 中的 versionCode / versionName
-// 严格对齐：每次 Android 客户端发版需同步更新本常量，并随 backend 一起部署。
-// downloadUrl 形态与 Requirement 3.3 / 部署脚本 zheye-v{versionName}.apk
-// 命名规范保持一致。
-//
-// MinSupportedVersionCode 默认为 1：对存量 v3 用户不触发 Force_Update；
-// 仅在出现破坏性协议变更时由运维通过 settings.env override 提升此值。
-var defaultAppVersionMetadata = AppVersionMetadata{
-	VersionCode:             3,
-	VersionName:             "3.0.0",
-	DownloadURL:             "https://github.com/zhangshilin8070-design/chatgpt2api/releases/latest/download/app.apk",
-	ReleaseNotes:            "",
-	MinSupportedVersionCode: 1,
+// 设计目标：
+//   - 0 重启 / 0 重编译切换版本：发布新 APK 只需替换 JSON 文件或调用
+//     PUT /api/admin/app-version，下一次客户端请求即生效；
+//   - 读多写极少：HTTP handler 走 atomic.Value，仅 stat 一次，无锁；
+//   - 热加载窗口期严格化：mtime 不变 → 复用缓存；mtime 变化 →
+//     重新 parse + 验证，验证失败保留旧缓存并返回 error，让 handler
+//     向客户端报 503，避免半截 JSON 被推给真实客户端。
+type appVersionStore struct {
+	path  string
+	mu    sync.Mutex   // 仅保护 reload 路径
+	cache atomic.Value // *appVersionSnapshot，永远非 nil（启动期已 seed）
 }
 
-// loadAppVersionMetadata 把默认常量与 settings.env override 合并为最终元数据。
-//
-// lookup 注入 os.LookupEnv 等价函数，便于单元测试在不污染全局 ENV 的前提
-// 下覆盖各 override key。production 路径请使用 loadAppVersionMetadataFromEnv。
-//
-// 校验规则（任一不通过则返回 error，由 caller 在启动期 panic）：
-//   - APP_LATEST_VERSION_CODE：必须可解析为正整数。
-//   - APP_LATEST_VERSION_NAME：trim 后非空。
-//   - APP_LATEST_DOWNLOAD_URL：trim 后非空，且为绝对 http(s) URL。
-//   - APP_LATEST_RELEASE_NOTES：允许显式空字符串（运维表示"本次无变更说明"）。
-//   - APP_LATEST_MIN_SUPPORTED_VERSION_CODE：必须可解析为正整数，且 ≤ VersionCode。
-//
-// "No compatibility layers"：override 非法时直接报错，绝不静默回退到默认。
-func loadAppVersionMetadata(lookup func(key string) (string, bool)) (AppVersionMetadata, error) {
-	if lookup == nil {
-		return AppVersionMetadata{}, errors.New("app version metadata loader: lookup function is required")
-	}
-	metadata := defaultAppVersionMetadata
+type appVersionSnapshot struct {
+	metadata AppVersionMetadata
+	modTime  int64
+	size     int64
+}
 
-	if raw, ok := lookup(envKeyAppLatestVersionCode); ok {
-		value, err := parsePositiveIntOverride(envKeyAppLatestVersionCode, raw)
-		if err != nil {
-			return AppVersionMetadata{}, err
+// newAppVersionStore 在启动期尝试加载一次元数据。
+//
+// 文件不存在时返回的 store 处于"未初始化"状态，Current() 会返回
+// errAppVersionUninitialized；handler 见状返回 503，提示管理员通过
+// PUT /api/admin/app-version 完成首次配置。文件存在但内容非法属于
+// 启动期硬错误，向上抛给 internal/main.go::log.Fatalf 终止启动——
+// 不静默回退默认值，符合 No compatibility layers。
+func newAppVersionStore(path string) (*appVersionStore, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("app version store: path must not be empty")
+	}
+	s := &appVersionStore{path: path}
+	s.cache.Store((*appVersionSnapshot)(nil))
+	if _, err := s.reload(); err != nil {
+		if errors.Is(err, errAppVersionUninitialized) {
+			return s, nil
 		}
-		metadata.VersionCode = value
+		return nil, err
 	}
-	if raw, ok := lookup(envKeyAppLatestVersionName); ok {
-		value := strings.TrimSpace(raw)
-		if value == "" {
-			return AppVersionMetadata{}, fmt.Errorf("%s must not be empty", envKeyAppLatestVersionName)
-		}
-		metadata.VersionName = value
-	}
-	if raw, ok := lookup(envKeyAppLatestDownloadURL); ok {
-		value, err := parseAbsoluteHTTPURLOverride(envKeyAppLatestDownloadURL, raw)
-		if err != nil {
-			return AppVersionMetadata{}, err
-		}
-		metadata.DownloadURL = value
-	}
-	if raw, ok := lookup(envKeyAppLatestReleaseNotes); ok {
-		// release notes 允许显式空字符串：运维以此表达"本次无变更说明"。
-		// 不做 trim 写回，保留运维原样换行/缩进。
-		metadata.ReleaseNotes = raw
-	}
-	if raw, ok := lookup(envKeyAppLatestMinSupportedVersionCode); ok {
-		value, err := parsePositiveIntOverride(envKeyAppLatestMinSupportedVersionCode, raw)
-		if err != nil {
-			return AppVersionMetadata{}, err
-		}
-		metadata.MinSupportedVersionCode = value
-	}
+	return s, nil
+}
 
-	if metadata.MinSupportedVersionCode > metadata.VersionCode {
-		return AppVersionMetadata{}, fmt.Errorf(
-			"%s (%d) must not exceed latest version code (%d)",
-			envKeyAppLatestMinSupportedVersionCode,
-			metadata.MinSupportedVersionCode,
-			metadata.VersionCode,
-		)
+// errAppVersionUninitialized 表示尚未配置 app-version.json。
+// store / handler 共享该哨兵以区分"未配置"与"配置非法"。
+var errAppVersionUninitialized = errors.New(
+	"app version not configured: call PUT /api/admin/app-version to publish the first release",
+)
+
+// Current 返回缓存中的元数据快照；如文件 mtime 已变则触发重载。
+//
+// 几个状态：
+//   - 文件不存在 → errAppVersionUninitialized（503）
+//   - 文件存在但缓存 mtime 已过期 → 触发 reload；reload 失败保留旧缓存
+//   - 文件存在且 mtime 与缓存一致 → 直接返回缓存
+func (s *appVersionStore) Current() (AppVersionMetadata, error) {
+	info, err := os.Stat(s.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return AppVersionMetadata{}, errAppVersionUninitialized
+		}
+		return AppVersionMetadata{}, fmt.Errorf("stat app version file: %w", err)
+	}
+	current, _ := s.cache.Load().(*appVersionSnapshot)
+	if current != nil && info.ModTime().UnixNano() == current.modTime && info.Size() == current.size {
+		return current.metadata, nil
+	}
+	return s.reload()
+}
+
+// Save 把新元数据原子写入磁盘并刷新缓存。
+//
+// 走 temp-file + rename 写入序列，保证读取方永远只看到完整 JSON；
+// 校验失败时不触碰磁盘，缓存保持旧值。
+func (s *appVersionStore) Save(metadata AppVersionMetadata) (AppVersionMetadata, error) {
+	if err := validateAppVersionMetadata(metadata); err != nil {
+		return AppVersionMetadata{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := writeAppVersionFile(s.path, metadata); err != nil {
+		return AppVersionMetadata{}, err
+	}
+	info, err := os.Stat(s.path)
+	if err != nil {
+		return AppVersionMetadata{}, fmt.Errorf("stat app version file after write: %w", err)
+	}
+	s.cache.Store(&appVersionSnapshot{
+		metadata: metadata,
+		modTime:  info.ModTime().UnixNano(),
+		size:     info.Size(),
+	})
+	return metadata, nil
+}
+
+func (s *appVersionStore) reload() (AppVersionMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return AppVersionMetadata{}, errAppVersionUninitialized
+		}
+		return AppVersionMetadata{}, fmt.Errorf("read app version file: %w", err)
+	}
+	metadata, err := parseAppVersionMetadata(raw)
+	if err != nil {
+		return AppVersionMetadata{}, fmt.Errorf("parse app version file %s: %w", s.path, err)
+	}
+	info, err := os.Stat(s.path)
+	if err != nil {
+		return AppVersionMetadata{}, fmt.Errorf("stat app version file: %w", err)
+	}
+	s.cache.Store(&appVersionSnapshot{
+		metadata: metadata,
+		modTime:  info.ModTime().UnixNano(),
+		size:     info.Size(),
+	})
+	return metadata, nil
+}
+
+// parseAppVersionMetadata 解析并校验 JSON 字节。strict json.Decoder
+// 拒绝未知字段，避免运维拼错字段名却走默认值。
+func parseAppVersionMetadata(raw []byte) (AppVersionMetadata, error) {
+	if len(raw) == 0 {
+		return AppVersionMetadata{}, errors.New("file is empty")
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	var metadata AppVersionMetadata
+	if err := dec.Decode(&metadata); err != nil {
+		return AppVersionMetadata{}, fmt.Errorf("decode json: %w", err)
+	}
+	if err := validateAppVersionMetadata(metadata); err != nil {
+		return AppVersionMetadata{}, err
 	}
 	return metadata, nil
 }
 
-// loadAppVersionMetadataFromEnv 是 production 路径包装：直接从进程 ENV 读取
-// override。internal/config.NewStore 在启动期已把 settings.env 的所有键强制
-// os.Setenv 覆盖到进程 ENV，本函数因此不需要再读 settings.env 文件。
-func loadAppVersionMetadataFromEnv() (AppVersionMetadata, error) {
-	return loadAppVersionMetadata(os.LookupEnv)
+func validateAppVersionMetadata(metadata AppVersionMetadata) error {
+	if metadata.VersionCode <= 0 {
+		return fmt.Errorf("versionCode must be a positive integer (got %d)", metadata.VersionCode)
+	}
+	if strings.TrimSpace(metadata.VersionName) == "" {
+		return errors.New("versionName must not be empty")
+	}
+	if err := validateAbsoluteHTTPURL("downloadUrl", metadata.DownloadURL); err != nil {
+		return err
+	}
+	if metadata.MinSupportedVersionCode <= 0 {
+		return fmt.Errorf("minSupportedVersionCode must be a positive integer (got %d)", metadata.MinSupportedVersionCode)
+	}
+	if metadata.MinSupportedVersionCode > metadata.VersionCode {
+		return fmt.Errorf(
+			"minSupportedVersionCode (%d) must not exceed versionCode (%d)",
+			metadata.MinSupportedVersionCode,
+			metadata.VersionCode,
+		)
+	}
+	return nil
 }
 
-func parsePositiveIntOverride(key, raw string) (int, error) {
+func validateAbsoluteHTTPURL(field, raw string) error {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return 0, fmt.Errorf("%s must not be empty", key)
-	}
-	value, err := strconv.Atoi(trimmed)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be a base-10 integer (got %q)", key, raw)
-	}
-	if value <= 0 {
-		return 0, fmt.Errorf("%s must be a positive integer (got %d)", key, value)
-	}
-	return value, nil
-}
-
-func parseAbsoluteHTTPURLOverride(key, raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", fmt.Errorf("%s must not be empty", key)
+		return fmt.Errorf("%s must not be empty", field)
 	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("%s is not a valid URL: %w", key, err)
+		return fmt.Errorf("%s is not a valid URL: %w", field, err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("%s must use http(s) scheme (got %q)", key, parsed.Scheme)
+		return fmt.Errorf("%s must use http(s) scheme (got %q)", field, parsed.Scheme)
 	}
 	if parsed.Host == "" {
-		return "", fmt.Errorf("%s must contain a host (got %q)", key, raw)
+		return fmt.Errorf("%s must contain a host (got %q)", field, raw)
 	}
-	return trimmed, nil
+	return nil
+}
+
+func writeAppVersionFile(path string, metadata AppVersionMetadata) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir for app version file: %w", err)
+	}
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal app version metadata: %w", err)
+	}
+	data = append(data, '\n')
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".app-version-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("fsync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("rename temp file to %s: %w", path, err)
+	}
+	return nil
+}
+
+// handleAppLatestVersion 公开返回当前 App 版本元数据。
+//
+// 任何身份均可访问（与 /api/announcements 同层），用于 App 启动时检查
+// 是否有新版本。响应 Cache-Control: no-store 保证 minSupportedVersionCode
+// 提升能被强制下发，不被任何中间缓存截留。
+func (a *App) handleAppLatestVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	metadata, err := a.appVersion.Current()
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		util.WriteError(w, status, err.Error())
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	util.WriteJSON(w, http.StatusOK, metadata)
+}
+
+// handleAppDownloadLatest 是固定下载链接：
+//
+//	GET /api/app/download/app  →  302  Location: <metadata.downloadUrl>
+//
+// 客户端、网页和外部分享都可以挂这一个 URL，发布新版本只要替换
+// JSON 里的 downloadUrl，下一次点击立即跳转新地址。
+func (a *App) handleAppDownloadLatest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	metadata, err := a.appVersion.Current()
+	if err != nil {
+		util.WriteError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, metadata.DownloadURL, http.StatusFound)
+}
+
+// handleAdminAppVersion 给管理员读写元数据。
+//
+//	GET  /api/admin/app-version  →  200  {当前 JSON}
+//	PUT  /api/admin/app-version  →  200  {写入后 JSON}
+//
+// PUT body 必须是合法的 AppVersionMetadata，字段缺失/格式错全部 400。
+// 写入成功后立即刷新内存缓存，无需重启。
+func (a *App) handleAdminAppVersion(w http.ResponseWriter, r *http.Request) {
+	identity, ok := a.requireIdentity(w, r, "")
+	if !ok {
+		return
+	}
+	if identity.Role != service.AuthRoleAdmin {
+		util.WriteError(w, http.StatusForbidden, "admin permission required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		metadata, err := a.appVersion.Current()
+		if err != nil {
+			util.WriteError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		util.WriteJSON(w, http.StatusOK, metadata)
+	case http.MethodPut:
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		var metadata AppVersionMetadata
+		if err := dec.Decode(&metadata); err != nil {
+			util.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid json body: %v", err))
+			return
+		}
+		saved, err := a.appVersion.Save(metadata)
+		if err != nil {
+			util.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		util.WriteJSON(w, http.StatusOK, saved)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }

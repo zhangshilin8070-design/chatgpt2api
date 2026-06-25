@@ -34,13 +34,6 @@ const (
 	codexResponsesUserAgent  = "codex-tui/0.128.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.128.0)"
 	codexResponsesOriginator = "codex-tui"
 
-	responsesImageDefaultSize  = "1024x1024"
-	responsesImageSizeMultiple = 16
-	responsesImageMaxEdge      = 3840
-	responsesImageMaxRatio     = 3
-	responsesImageMinPixels    = 655360
-	responsesImageMaxPixels    = 8294400
-
 	officialImageDownloadAttempts = 3
 )
 
@@ -432,9 +425,9 @@ func buildOfficialImageSizeHint(size string) string {
 		"9:16":  "输出为 9:16 竖屏构图，适合竖版画幅展示。",
 		"4:3":   "输出为 4:3 比例，兼顾宽度与高度，适合展示画面细节。",
 		"3:4":   "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
-		"1080p": "以 1080 x 1080 像素对应的正方形画幅作为构图偏好，实际像素以上游返回为准。",
-		"2k":    "以 2048 x 2048 像素对应的正方形画幅作为构图偏好，实际像素以上游返回为准。",
-		"4k":    "以 2880 x 2880 像素对应的正方形画幅作为构图偏好，实际像素以上游返回为准。",
+		"1080p": "目标画质档为 1080P，整体清晰度按 1080P 级别构图，实际像素以上游返回为准。",
+		"2k":    "目标画质档为 2K，整体清晰度按 2K 级别构图，实际像素以上游返回为准。",
+		"4k":    "目标画质档为 4K，整体清晰度按 4K 级别构图，实际像素以上游返回为准。",
 	}
 	if hint, ok := hints[size]; ok {
 		return hint

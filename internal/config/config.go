@@ -1,4 +1,4 @@
-package config
+﻿package config
 
 import (
 	"encoding/json"
@@ -396,7 +396,7 @@ func (s *Store) UpdateProxyURL() string {
 }
 
 func (s *Store) UpdateRepo() string {
-	return normalizeUpdateRepo(s.settingValue("update_repo", "ZyphrZero/chatgpt2api"))
+	return normalizeUpdateRepo(s.settingValue("update_repo", "zhangshilin8070-design/chatgpt2api"))
 }
 
 func (s *Store) UpdateGitHubToken() string {
@@ -738,7 +738,7 @@ func (s *Store) Update(data map[string]any) (map[string]any, error) {
 	if value, ok := next["cloud_storage_uploader"]; ok {
 		next["cloud_storage_uploader"] = normalizeCloudStorageUploader(value)
 	}
-	next["update_repo"] = normalizeUpdateRepo(util.ValueOr(next["update_repo"], "ZyphrZero/chatgpt2api"))
+	next["update_repo"] = normalizeUpdateRepo(util.ValueOr(next["update_repo"], "zhangshilin8070-design/chatgpt2api"))
 	if err := s.validateSettingsUpdateLocked(next); err != nil {
 		s.mu.Unlock()
 		return nil, err
@@ -818,7 +818,7 @@ func (s *Store) settingValueFromData(data map[string]any, key string, fallback a
 }
 
 func (s *Store) validateSettingsUpdateLocked(data map[string]any) error {
-	if err := validateUpdateRepo(util.Clean(util.ValueOr(data["update_repo"], "ZyphrZero/chatgpt2api"))); err != nil {
+	if err := validateUpdateRepo(util.Clean(util.ValueOr(data["update_repo"], "zhangshilin8070-design/chatgpt2api"))); err != nil {
 		return err
 	}
 	linuxdo := s.linuxDoOAuthFromData(data)
@@ -858,7 +858,7 @@ func (s *Store) validateSettingsUpdateLocked(data map[string]any) error {
 func normalizeUpdateRepo(value any) string {
 	repo := strings.Trim(strings.TrimSpace(fmt.Sprint(value)), "/")
 	if repo == "" {
-		return "ZyphrZero/chatgpt2api"
+		return "zhangshilin8070-design/chatgpt2api"
 	}
 	return repo
 }

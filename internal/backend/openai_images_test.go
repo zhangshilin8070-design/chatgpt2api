@@ -168,7 +168,7 @@ func TestOpenAIImagesClient_Edit_RequestShape(t *testing.T) {
 		UpstreamModel: "gpt-image-2",
 		Prompt:        "edit me",
 		N:             3,
-		Size:          "512x512",
+		Size:          "1024x1024",
 		OutputFormat:  "png",
 		InputImages: []ResponsesInputImage{
 			{Data: imageA, ContentType: "image/png"},
@@ -216,7 +216,7 @@ func TestOpenAIImagesClient_Edit_RequestShape(t *testing.T) {
 		"model":           "gpt-image-2",
 		"prompt":          "edit me",
 		"n":               "3",
-		"size":            "512x512",
+		"size":            "1024x1024",
 		"response_format": "b64_json",
 		"output_format":   "png",
 	}

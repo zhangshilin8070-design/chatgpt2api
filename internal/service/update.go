@@ -26,7 +26,7 @@ import (
 
 const (
 	updateCacheTTL       = 20 * time.Minute
-	defaultUpdateRepo    = "ZyphrZero/chatgpt2api"
+	defaultUpdateRepo    = "zhangshilin8070-design/chatgpt2api"
 	defaultGitHubAPIBase = "https://api.github.com"
 	maxUpdateDownload    = 500 * 1024 * 1024
 )

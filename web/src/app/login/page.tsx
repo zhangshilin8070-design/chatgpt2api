@@ -5,10 +5,10 @@ import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Github,
-  Send,
   KeyRound,
   LoaderCircle,
   LogIn,
+  MessageCircle,
   MoonStar,
   ShieldCheck,
   Sun,
@@ -36,8 +36,8 @@ import { getDefaultRouteForSession } from "@/store/auth";
 
 const loginBackgroundClass =
   "bg-[#fff9fb] bg-[radial-gradient(rgba(20,86,240,0.12)_1px,transparent_1px),linear-gradient(145deg,#fff8fa_0%,#ffffff_48%,#f4f8ff_100%)] [background-position:0_0,center] [background-size:12px_12px,cover] dark:bg-[#090d16] dark:bg-[radial-gradient(rgba(96,165,250,0.16)_1px,transparent_1px),linear-gradient(145deg,#080b13_0%,#101827_52%,#070b12_100%)]";
-const githubUrl = "https://github.com/ZyphrZero/chatgpt2api";
-const telegramUrl = "https://t.me/+YBR7t_CPOYBkYzU1";
+const githubUrl = "https://github.com/zhangshilin8070-design/chatgpt2api";
+const qqGroupUrl = "https://qm.qq.com/q/wAvLW3ejKi";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -149,9 +149,9 @@ export default function LoginPage() {
           variant="outline"
           className="h-9 rounded-full border-border/60 bg-background/80 px-3 text-muted-foreground shadow-sm backdrop-blur hover:text-foreground"
         >
-          <a href={telegramUrl} target="_blank" rel="noreferrer" aria-label="加入 Telegram 群组">
-            <Send data-icon="inline-start" />
-            <span className="hidden sm:inline">Telegram</span>
+          <a href={qqGroupUrl} target="_blank" rel="noreferrer" aria-label="加入折页 QQ 群 441035011">
+            <MessageCircle data-icon="inline-start" />
+            <span className="hidden sm:inline">QQ 群</span>
           </a>
         </Button>
         <Button

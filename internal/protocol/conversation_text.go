@@ -78,17 +78,25 @@ func AssistantHistoryMessages(messages []map[string]any) []string {
 	return out
 }
 
+// NormalizeImageGenerationSize 把请求里的 size 字段做轻量归一化：仅对分档
+// 预设（1080p / 2k / 4k）做大小写归一化以便后续识别；像素 / 比例形态保留
+// 原始字符串，由各通路 backend 自行做白名单收敛。
+//
+// 分档预设不会被翻成具体像素：
+//   - ChatGPT /backend-api/codex/responses 链路上 tool.size 只接受
+//     1024x1024 / 1536x1024 / 1024x1536 / auto，超出会被上游打回 5xx；
+//   - OpenAI Images API 同样只接受上述三档；
+//   - newapi 等聚合 chat-completions 上游忽略 size 字段，唯一可控的是 prompt
+//     里的比例 / 分档提示。
+//
+// 分档信息仅通过 BuildImagePrompt 的 tier 提示词向上游传达。
 func NormalizeImageGenerationSize(size string) string {
-	switch strings.ToLower(strings.TrimSpace(size)) {
-	case "1080p":
-		return "1080x1080"
-	case "2k":
-		return "2048x2048"
-	case "4k":
-		return "2880x2880"
-	default:
-		return strings.TrimSpace(size)
+	trimmed := strings.TrimSpace(size)
+	switch strings.ToLower(trimmed) {
+	case "1080p", "2k", "4k":
+		return strings.ToLower(trimmed)
 	}
+	return trimmed
 }
 
 func imageSizeDimensions(size string) (int, int, bool) {
@@ -106,6 +114,7 @@ func imageSizeDimensions(size string) (int, int, bool) {
 
 func BuildImagePrompt(prompt, size, quality string) string {
 	prompt = strings.TrimSpace(prompt)
+	rawTier := strings.ToLower(strings.TrimSpace(size))
 	size = NormalizeImageGenerationSize(size)
 	if strings.EqualFold(size, "auto") {
 		size = ""
@@ -121,7 +130,14 @@ func BuildImagePrompt(prompt, size, quality string) string {
 		"4:3":  "输出为 4:3 比例，兼顾宽度与高度，适合展示画面细节。",
 		"3:4":  "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
 	}
-	if size != "" {
+	tierHints := map[string]string{
+		"1080p": "目标画质档为 1080P，整体清晰度按 1080P 级别构图，实际像素以上游返回为准。",
+		"2k":    "目标画质档为 2K，整体清晰度按 2K 级别构图，实际像素以上游返回为准。",
+		"4k":    "目标画质档为 4K，整体清晰度按 4K 级别构图，实际像素以上游返回为准。",
+	}
+	if hint, ok := tierHints[rawTier]; ok {
+		hintsList = append(hintsList, hint)
+	} else if size != "" {
 		if width, height, ok := imageSizeDimensions(size); ok {
 			hintsList = append(hintsList, fmt.Sprintf("以 %d x %d 像素对应的宽高比作为构图偏好，实际像素以上游返回为准。", width, height))
 		} else if hint, ok := hints[size]; ok {
@@ -401,4 +417,73 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// mergeImageSizeWithResolution 把"比例 + 分辨率档"合并为最终下发上游的 size。
+//
+// 规则（按 IMAGE-API.local.md §6 制定）：
+//   - size 已经是显式像素（WxH）或档位（1k/2k/4k）→ 原样保留，忽略 resolution；
+//   - resolution 为空 / "auto" → 原样保留 size；
+//   - resolution ∈ {1080p / 2k / 4k} 且 size 为比例（"a:b"，例如"9:16"、
+//     "16:9"、"1:1"）→ 按比例 + 档位合成具体像素：
+//       1080p → 短边 1080；2k → 长边 2048；4k → 长边 3840；
+//   - 其它情况 → 返回原 size。
+//
+// 这样前端"9:16 + 4K"会下发 size="2160x3840"，Axiom 网关命中 4k 计价档同时
+// 上游模型识别 9:16 比例；只填"4K"无比例时下发 size="4k"（计价档字面值）。
+func mergeImageSizeWithResolution(size, resolution string) string {
+	size = strings.TrimSpace(size)
+	res := strings.ToLower(strings.TrimSpace(resolution))
+	if res == "" || res == "auto" {
+		return size
+	}
+	// 仅比例形态参与合成；像素 / 档位字面值原样保留。
+	matches := regexp.MustCompile(`^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$`).FindStringSubmatch(size)
+	if len(matches) != 3 {
+		// 没有有效比例：如果 size 也为空，直接用档位字面值下发；否则保留 size。
+		if size == "" {
+			switch res {
+			case "1080p", "2k", "4k":
+				return res
+			}
+		}
+		return size
+	}
+	ratioW := util.ToInt(matches[1], 0)
+	ratioH := util.ToInt(matches[2], 0)
+	if ratioW <= 0 || ratioH <= 0 {
+		return size
+	}
+	var refLong int
+	var refShort int
+	switch res {
+	case "1080p":
+		refShort = 1080
+	case "2k":
+		refLong = 2048
+	case "4k":
+		refLong = 3840
+	default:
+		return size
+	}
+	if refLong > 0 {
+		// 4k / 2k：按长边对齐。
+		if ratioW >= ratioH {
+			w := refLong
+			h := (refLong * ratioH) / ratioW
+			return fmt.Sprintf("%dx%d", w, h)
+		}
+		w := (refLong * ratioW) / ratioH
+		h := refLong
+		return fmt.Sprintf("%dx%d", w, h)
+	}
+	// 1080p：按短边对齐到 1080。
+	if ratioW <= ratioH {
+		w := refShort
+		h := (refShort * ratioH) / ratioW
+		return fmt.Sprintf("%dx%d", w, h)
+	}
+	w := (refShort * ratioW) / ratioH
+	h := refShort
+	return fmt.Sprintf("%dx%d", w, h)
 }

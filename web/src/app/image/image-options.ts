@@ -26,9 +26,9 @@ export type ImageSizeMode = (typeof IMAGE_SIZE_MODE_OPTIONS)[number]["value"];
 
 export const IMAGE_RESOLUTION_OPTIONS = [
   { value: "auto", label: "Auto", description: "不指定固定像素，交给图片工具决定" },
-  { value: "1080p", label: "1080P", description: "正方形为 1088×1088，宽高按所选比例计算" },
-  { value: "2k", label: "2K", description: "2K Square 为 2048×2048，上游会按账号能力判断" },
-  { value: "4k", label: "4K", description: "按链路像素上限收敛，上游会按账号能力判断" },
+  { value: "1080p", label: "1080P", description: "1080P 画质档（提示上游优先 1080P 级别构图，实际像素以上游返回为准）" },
+  { value: "2k", label: "2K", description: "2K 画质档（提示上游优先 2K 级别构图，实际像素以上游返回为准）" },
+  { value: "4k", label: "4K", description: "4K 画质档（提示上游优先 4K 级别构图，实际像素以上游返回为准）" },
 ] as const;
 
 export type ImageResolution = (typeof IMAGE_RESOLUTION_OPTIONS)[number]["value"];
@@ -60,11 +60,8 @@ export const IMAGE_SIZE_PRESET_DETAILS = [
   { label: "1:1", requestValue: "1:1", normalizedSize: "1024x1024", highResolution: false },
   { label: "3:2", requestValue: "3:2", normalizedSize: "1536x1024", highResolution: false },
   { label: "2:3", requestValue: "2:3", normalizedSize: "1024x1536", highResolution: false },
-  { label: "16:9", requestValue: "16:9", normalizedSize: "1536x864", highResolution: false },
-  { label: "9:16", requestValue: "9:16", normalizedSize: "864x1536", highResolution: false },
-  { label: "1080P Square", requestValue: "1080p", normalizedSize: "1088x1088", highResolution: false },
-  { label: "2K Square", requestValue: "2k", normalizedSize: "2048x2048", highResolution: true },
-  { label: "4K", requestValue: "4k", normalizedSize: "2880x2880", highResolution: true },
+  { label: "16:9", requestValue: "16:9", normalizedSize: "1536x1024", highResolution: false },
+  { label: "9:16", requestValue: "9:16", normalizedSize: "1024x1536", highResolution: false },
 ] as const;
 
 export const IMAGE_QUALITY_OPTIONS = [
@@ -181,43 +178,6 @@ export function getActiveImageAspectRatio({
   return aspectRatio;
 }
 
-export function calculateImageSize(resolution: Exclude<ImageResolution, "auto">, ratio: string) {
-  const parsed = parseImageRatio(ratio);
-  if (!parsed) {
-    return "";
-  }
-
-  const { width: ratioWidth, height: ratioHeight } = parsed;
-  if (ratioWidth === ratioHeight) {
-    const side = resolution === "1080p" ? 1080 : resolution === "2k" ? 2048 : 3840;
-    return normalizeImageSize(`${side}x${side}`);
-  }
-
-  if (resolution === "1080p") {
-    const shortSide = 1080;
-    const width =
-      ratioWidth > ratioHeight
-        ? roundToMultiple((shortSide * ratioWidth) / ratioHeight, SIZE_MULTIPLE)
-        : shortSide;
-    const height =
-      ratioWidth > ratioHeight
-        ? shortSide
-        : roundToMultiple((shortSide * ratioHeight) / ratioWidth, SIZE_MULTIPLE);
-    return normalizeImageSize(`${width}x${height}`);
-  }
-
-  const longSide = resolution === "2k" ? 2048 : 3840;
-  const width =
-    ratioWidth > ratioHeight
-      ? longSide
-      : roundToMultiple((longSide * ratioWidth) / ratioHeight, SIZE_MULTIPLE);
-  const height =
-    ratioWidth > ratioHeight
-      ? roundToMultiple((longSide * ratioHeight) / ratioWidth, SIZE_MULTIPLE)
-      : longSide;
-  return normalizeImageSize(`${width}x${height}`);
-}
-
 export function buildCustomImageSize(width: string, height: string) {
   const parsedWidth = Number.parseInt(width, 10);
   const parsedHeight = Number.parseInt(height, 10);
@@ -250,10 +210,14 @@ export function isImageResolution(value: unknown): value is ImageResolution {
   return typeof value === "string" && IMAGE_RESOLUTION_VALUES.has(value);
 }
 
+// 当 resolution !== "auto" 时，size 字段只承载比例语义（"1:1" / "16:9" …）
+// 或显式像素；分档 1080p / 2k / 4k 单独通过 `image_resolution` 字段透传，
+// 不再合成具体像素。原因详见 internal/backend/responses_image_size.go：
+// codex/responses 与 OpenAI Images 上游只接受 1024x1024 / 1536x1024 /
+// 1024x1536 / auto，超出值会被打回 5xx；分档信息靠 prompt 提示传递。
 export function buildImageSize({
   mode,
   aspectRatio,
-  resolution,
   customRatio,
   customWidth,
   customHeight,
@@ -268,13 +232,7 @@ export function buildImageSize({
   if (aspectRatio === CUSTOM_IMAGE_ASPECT_RATIO && !activeAspectRatio) {
     return "";
   }
-  if (resolution === "auto") {
-    return activeAspectRatio;
-  }
-  if (!activeAspectRatio) {
-    return calculateImageSize(resolution, "1:1");
-  }
-  return calculateImageSize(resolution, activeAspectRatio) || activeAspectRatio;
+  return activeAspectRatio;
 }
 
 export function getImageAspectRatioFromSize(size: string): ImageAspectRatio {
@@ -283,19 +241,6 @@ export function getImageAspectRatioFromSize(size: string): ImageAspectRatio {
     return normalized;
   }
   const isDimensionSize = SIZE_PATTERN.test(normalized);
-  for (const aspectRatio of IMAGE_ASPECT_RATIO_OPTIONS.map((option) => option.value)) {
-    if (!aspectRatio || aspectRatio === CUSTOM_IMAGE_ASPECT_RATIO) {
-      continue;
-    }
-    for (const resolution of IMAGE_RESOLUTION_OPTIONS.map((option) => option.value)) {
-      if (resolution === "auto") {
-        continue;
-      }
-      if (calculateImageSize(resolution, aspectRatio) === normalized) {
-        return aspectRatio;
-      }
-    }
-  }
   if (!isDimensionSize && parseImageRatio(normalized)) {
     return CUSTOM_IMAGE_ASPECT_RATIO;
   }
@@ -306,19 +251,6 @@ export function getImageResolutionFromSize(size: string): ImageResolution {
   const normalized = normalizeImageSize(size);
   if (isImageResolution(normalized)) {
     return normalized;
-  }
-  for (const aspectRatio of IMAGE_ASPECT_RATIO_OPTIONS.map((option) => option.value)) {
-    if (!aspectRatio || aspectRatio === CUSTOM_IMAGE_ASPECT_RATIO) {
-      continue;
-    }
-    for (const resolution of IMAGE_RESOLUTION_OPTIONS.map((option) => option.value)) {
-      if (resolution === "auto") {
-        continue;
-      }
-      if (calculateImageSize(resolution, aspectRatio) === normalized) {
-        return resolution;
-      }
-    }
   }
   return "auto";
 }

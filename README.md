@@ -530,7 +530,7 @@ curl http://localhost:3000/v1/images/generations \
 
 `gpt-image-2` 和 `auto` 走 ChatGPT 官网图片工作台的纯协议链路：当前按官网 HAR 实抓对齐到底层 `gpt-5-5` 模型，请求 `/backend-api/f/conversation` 建立 SSE，并从 `role=tool` 且 `async_task_type=image_gen` 的上游消息里提取图片结果。部分会话/续图场景里官网还会补发 `/backend-api/f/conversation/prepare` 获取 `conduit_token`，但不是每次首发生成前都显式出现。`codex-gpt-image-2` 仍保留为独立的 Codex 图片协议模型，继续走 `/backend-api/codex/responses` 路线，用于和官网图片额度区分。Free 账号不会被本地预先拦截；如果账号没有对应图片工具权限，上游可能直接返回失败。
 
-`size` 可以传 `auto`、比例值（如 `1:1`、`16:9`、`9:16`）、分辨率档位（`1080p`、`2k`、`4k`）或显式 `WIDTHxHEIGHT`。在纯协议工作台链路下，这些信息会作为上游提示词约束参与构图，不再转换为 Codex Responses 专用的工具尺寸字段。
+`size` 可以传 `auto`、比例值（如 `1:1`、`16:9`、`9:16`）、分辨率档位（`1080p`、`2k`、`4k`）或显式 `WIDTHxHEIGHT`。分辨率档位只作为画质提示加入 prompt，不会被翻成具体像素；codex/responses 与 OpenAI Images API 上游只接受 `1024x1024 / 1536x1024 / 1024x1536 / auto`，超出值会被收敛到最接近的白名单档位。
 
 ### `POST /v1/images/edits`
 
@@ -663,7 +663,7 @@ curl http://localhost:3000/v1/responses \
 
 ## 社区与鸣谢
 
-Telegram 群组：[ChatGPT2API](https://t.me/+YBR7t_CPOYBkYzU1)
+QQ 群：[折页](https://qm.qq.com/q/wAvLW3ejKi)
 
 学 AI，上 L 站：[LinuxDO](https://linux.do)
 

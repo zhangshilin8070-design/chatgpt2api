@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -55,7 +56,7 @@ type App struct {
 	register       *service.RegisterService
 	update         *service.UpdateService
 	cloudStorage   *service.CloudStorageService
-	appVersion     AppVersionMetadata
+	appVersion     *appVersionStore
 	cancel         context.CancelFunc
 }
 
@@ -64,11 +65,11 @@ func NewApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	// settings.env override 在 config.NewStore 阶段已通过 os.Setenv 写入进程
-	// ENV；这里启动期一次性解析 Android 客户端版本元数据。任一字段非法
-	// 即返回 error，由 internal/main.go 的 log.Fatalf 阻止服务启动
-	// （Requirement 5.3 / NFR 6.2 fail-fast，绝不静默回退默认）。
-	appVersion, err := loadAppVersionMetadataFromEnv()
+	// Android 客户端版本元数据 store：以 DataDir/app-version.json 为唯一
+	// 数据源（mtime 热重载），运维通过 admin REST 或直接编辑文件发布新
+	// 版本，无需重新编译或重启服务。文件缺失/非法即报错终止启动，避免
+	// 把过期版本号悄悄发布给客户端（No compatibility layers）。
+	appVersion, err := newAppVersionStore(filepath.Join(cfg.DataDir, appVersionFileName))
 	if err != nil {
 		return nil, fmt.Errorf("load app version metadata: %w", err)
 	}
@@ -675,29 +676,7 @@ func (a *App) handleAppMeta(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAppLatestVersion 暴露 Android 客户端最新版本元数据。
-//
-// 协议形态见 web-app-parity-iteration Requirement 5.1 / 5.2：
-//   - 路径 GET /api/app/latest-version（路由注册见 router.go，与
-//     /api/announcements 同层匿名可访问）；
-//   - 响应 JSON 字段：versionCode / versionName / downloadUrl /
-//     releaseNotes / minSupportedVersionCode；
-//   - 任何身份均可访问，本 handler 不调用 requireIdentity，也不在响应中
-//     内联任何用户上下文。
-//
-// Cache-Control: no-store —— 明确禁用任何中间缓存。元数据虽然全局共享，
-// 但下游 CDN / 浏览器一旦命中缓存，运维下发新版本（Force_Update 触发
-// minSupportedVersionCode 提升）就会被延迟感知，违背 Requirement 5.6 的
-// 强制更新语义；no-store 是最小副作用的关闭策略（NFR 4.1 / NFR 6.2）。
-func (a *App) handleAppLatestVersion(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	util.WriteJSON(w, http.StatusOK, a.appVersion)
-}
-
+// handlePermissionCatalog 返回所有可分配权限的清单。
 func (a *App) handlePermissionCatalog(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return

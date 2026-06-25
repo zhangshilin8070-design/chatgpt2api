@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, Github, LogOut, MoonStar, Send, Smartphone, Sun, UserCircle2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Github, LogOut, MessageCircle, MoonStar, Smartphone, Sun, UserCircle2 } from "lucide-react";
 import { motion, useReducedMotion, type Transition } from "motion/react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -21,7 +21,7 @@ import {
 } from "@/store/auth";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { fetchAccounts, fetchLatestAppVersion, logout, type Account, type BillingState } from "@/lib/api";
+import { fetchAccounts, logout, type Account, type BillingState } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   applyColorTheme,
@@ -234,17 +234,18 @@ function AccountMenu({
               个人中心
             </Link>
             <a
-              href="https://t.me/+YBR7t_CPOYBkYzU1"
+              href="https://qm.qq.com/q/wAvLW3ejKi"
               target="_blank"
               rel="noreferrer"
               className="flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
               onClick={() => setOpen(false)}
+              title="加入折页 QQ 群 441035011"
             >
-              <Send className="size-4" />
-              Telegram
+              <MessageCircle className="size-4" />
+              QQ 群
             </a>
             <a
-              href="https://github.com/ZyphrZero/chatgpt2api"
+              href="https://github.com/zhangshilin8070-design/chatgpt2api"
               target="_blank"
               rel="noreferrer"
               className="flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
@@ -290,7 +291,6 @@ export function TopNav() {
   const [theme, setTheme] = useState<ColorTheme>(() => getPreferredColorTheme());
   const [availableQuota, setAvailableQuota] = useState("--");
   const [navCollapsed, setNavCollapsed] = useState(false);
-  const [latestAppDownloadUrl, setLatestAppDownloadUrl] = useState<string>("");
   const appMeta = useAppMeta();
 
   useEffect(() => {
@@ -325,25 +325,6 @@ export function TopNav() {
     window.addEventListener(AUTH_SESSION_CHANGE_EVENT, handleSessionChange);
     return () => {
       window.removeEventListener(AUTH_SESSION_CHANGE_EVENT, handleSessionChange);
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    const controller = new AbortController();
-    void (async () => {
-      try {
-        const result = await fetchLatestAppVersion({ signal: controller.signal });
-        if (active && result?.downloadUrl) {
-          setLatestAppDownloadUrl(result.downloadUrl);
-        }
-      } catch {
-        // 静默回退到 webConfig.appVersion（Requirement 3.5）。
-      }
-    })();
-    return () => {
-      active = false;
-      controller.abort();
     };
   }, []);
 
@@ -420,7 +401,7 @@ export function TopNav() {
   const roleLabel = session.role === "admin" ? "管理员" : session.roleName || (session.provider === "linuxdo" ? "Linuxdo 用户" : "普通用户");
   const canAccessImageTasks = canAccessPath(session, "/image");
   const navToggleLabel = navCollapsed ? "展开导航栏" : "收起导航栏";
-  const downloadAppHref = latestAppDownloadUrl;
+  const downloadAppHref = "/api/app/download/app";
 
   return (
     <header className="sticky top-3 z-40 rounded-[24px] border border-border bg-card/90 shadow-[0_0_22.576px_rgba(44,74,116,0.09)] backdrop-blur dark:border-border dark:bg-card/92">

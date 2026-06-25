@@ -1053,6 +1053,7 @@ export async function createImageGenerationTask(
     moderation?: string;
     style?: string;
     partialImages?: number;
+    watermark?: string;
   },
 ) {
   return httpRequest<CreationTask>("/api/creation-tasks/image-generations", {
@@ -1069,6 +1070,7 @@ export async function createImageGenerationTask(
       ...(toolOptions?.background ? { background: toolOptions.background } : {}),
       ...(toolOptions?.moderation ? { moderation: toolOptions.moderation } : {}),
       ...(toolOptions?.style ? { style: toolOptions.style } : {}),
+      ...(toolOptions?.watermark ? { watermark: toolOptions.watermark } : {}),
       ...(typeof toolOptions?.partialImages === "number" ? { partial_images: toolOptions.partialImages } : {}),
       ...(messages?.length ? { messages } : {}),
       visibility,
@@ -1096,6 +1098,8 @@ export async function createImageEditTask(
     style?: string;
     partialImages?: number;
     inputImageMask?: string;
+    watermark?: string;
+    inputFidelity?: string;
   },
 ) {
   const formData = new FormData();
@@ -1132,6 +1136,12 @@ export async function createImageEditTask(
   }
   if (toolOptions?.style) {
     formData.append("style", toolOptions.style);
+  }
+  if (toolOptions?.watermark) {
+    formData.append("watermark", toolOptions.watermark);
+  }
+  if (toolOptions?.inputFidelity) {
+    formData.append("input_fidelity", toolOptions.inputFidelity);
   }
   if (typeof toolOptions?.partialImages === "number") {
     formData.append("partial_images", String(toolOptions.partialImages));

@@ -98,7 +98,7 @@ export function VersionUpdateCard({
   const updateRepo =
     typeof config?.update_repo === "string"
       ? config.update_repo
-      : "ZyphrZero/chatgpt2api";
+      : "zhangshilin8070-design/chatgpt2api";
   const updateGitHubToken = String(config?.update_github_token || "");
   const updateGitHubTokenConfigured = Boolean(
     config?.update_github_token_configured,
