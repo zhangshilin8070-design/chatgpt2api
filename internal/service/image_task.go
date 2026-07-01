@@ -70,6 +70,7 @@ type ImageTaskService struct {
 	chat                ImageTaskHandler
 	billing             *BillingService
 	autoRoute           AutoImageRouteResolver
+	industry            *IndustryPromptService
 	retentionGetter     func() int
 	taskTimeoutGetter   func() time.Duration
 	userConcurrentLimit func() int
@@ -152,7 +153,7 @@ func (s *ImageTaskService) SetBillingService(billing *BillingService) {
 	}
 }
 
-// SetAutoRouteResolver 装配 submit 阶段使用的 Auto 路由解析器，用于把
+// SetAutoRouteResolver 装配 submit 阶段使用的 Auto 路由解析器
 // 客户端原始 model（"auto" / "" / 显式 External_Image_Model）解析为
 // (resolvedExternalModel, bucket)。
 //
@@ -163,6 +164,15 @@ func (s *ImageTaskService) SetAutoRouteResolver(resolver AutoImageRouteResolver)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autoRoute = resolver
+}
+
+// SetIndustryPromptService 装配行业提示词服务；submit 阶段会用它把
+// (industry_key + userPrompt) 拼装为最终 finalPrompt 并写回 payload。
+// 未装配时 industry_key 字段被忽略，向后兼容原行为。
+func (s *ImageTaskService) SetIndustryPromptService(industry *IndustryPromptService) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.industry = industry
 }
 
 func (s *ImageTaskService) SubmitGeneration(ctx context.Context, identity Identity, clientTaskID, prompt, model, size, quality, baseURL string, n int, messages any, visibilityValues ...string) (map[string]any, error) {
@@ -331,12 +341,50 @@ func (s *ImageTaskService) CancelTask(identity Identity, clientTaskID string) (m
 	return result, nil
 }
 
+// applyIndustryPrompt splices the industry system prompt in front of the
+// user prompt inside payload["prompt"] when mode ∈ {generate, edit} and
+// an IndustryPromptService is configured. It also records the source and
+// composed snippet into payload for downstream logging.
+func (s *ImageTaskService) applyIndustryPrompt(identity Identity, owner, mode string, payload map[string]any) {
+	if mode != "generate" && mode != "edit" {
+		return
+	}
+	industry := s.industry
+	if industry == nil {
+		return
+	}
+	industryKey := strings.TrimSpace(util.Clean(payload["industry_key"]))
+	if industryKey == "" {
+		return
+	}
+	industryPrompt, source, err := industry.ResolveForUser(owner, industryKey)
+	if err != nil || source == IndustrySourceNone || industryPrompt == "" {
+		payload["industry_key"] = industryKey
+		payload["industry_source"] = IndustrySourceNone
+		return
+	}
+	userPrompt := util.Clean(payload["prompt"])
+	final, snippet := ComposeIndustryFinalPrompt(industryPrompt, userPrompt)
+	payload["prompt"] = final
+	payload["industry_key"] = industryKey
+	payload["industry_source"] = source
+	// truncate snippet for audit
+	if runes := []rune(snippet); len(runes) > 1000 {
+		snippet = string(runes[:1000])
+	}
+	payload["industry_prompt"] = snippet
+}
+
 func (s *ImageTaskService) submit(ctx context.Context, identity Identity, clientTaskID, mode string, payload map[string]any) (map[string]any, error) {
 	taskID := strings.TrimSpace(clientTaskID)
 	if taskID == "" {
 		return nil, fmt.Errorf("client_task_id is required")
 	}
 	owner := ownerID(identity)
+	// Industry prompt injection: only applies to generate/edit modes.
+	// Called before route resolution / billing so the final prompt is what
+	// downstream sees. Silent when industry_key is empty or service is unset.
+	s.applyIndustryPrompt(identity, owner, mode, payload)
 	key := taskKey(owner, taskID)
 	now := util.NowLocal()
 	count := taskCount(mode, payload)
@@ -402,6 +450,12 @@ func (s *ImageTaskService) submit(ctx context.Context, identity Identity, client
 	// 杜绝退款时把桶 B 的预扣费错退到桶 A（Requirement 6.4）。
 	// resolved_model 仅在图像模式下有意义，chat 任务沿用原始 model 字段。
 	task["bucket"] = bucket
+	if industryKey := util.Clean(payload["industry_key"]); industryKey != "" {
+		task["industry_key"] = industryKey
+	}
+	if industrySource := util.Clean(payload["industry_source"]); industrySource != "" {
+		task["industry_source"] = industrySource
+	}
 	if mode == "generate" || mode == "edit" {
 		task["resolved_model"] = resolvedModel
 	}
@@ -1076,6 +1130,12 @@ func publicTask(task map[string]any) map[string]any {
 	if visibility := util.Clean(task["visibility"]); visibility != "" {
 		item["visibility"] = visibility
 	}
+	if industryKey := util.Clean(task["industry_key"]); industryKey != "" {
+		item["industry_key"] = industryKey
+	}
+	if source := util.Clean(task["industry_source"]); source != "" {
+		item["industry_source"] = source
+	}
 	return item
 }
 
@@ -1232,6 +1292,9 @@ func mergeImageTaskMetadata(payload map[string]any, metadata map[string]any) {
 		if util.ToBool(metadata["share_reference_images"]) {
 			payload["share_reference_images"] = true
 		}
+	}
+	if industryKey := strings.TrimSpace(util.Clean(metadata["industry_key"])); industryKey != "" {
+		payload["industry_key"] = industryKey
 	}
 }
 

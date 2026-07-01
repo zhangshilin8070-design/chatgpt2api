@@ -1055,6 +1055,7 @@ export async function createImageGenerationTask(
     partialImages?: number;
     watermark?: string;
   },
+  industryKey?: string,
 ) {
   return httpRequest<CreationTask>("/api/creation-tasks/image-generations", {
     method: "POST",
@@ -1073,6 +1074,7 @@ export async function createImageGenerationTask(
       ...(toolOptions?.watermark ? { watermark: toolOptions.watermark } : {}),
       ...(typeof toolOptions?.partialImages === "number" ? { partial_images: toolOptions.partialImages } : {}),
       ...(messages?.length ? { messages } : {}),
+      ...(industryKey ? { industry_key: industryKey } : {}),
       visibility,
       n: count,
     },
@@ -1101,6 +1103,7 @@ export async function createImageEditTask(
     watermark?: string;
     inputFidelity?: string;
   },
+  industryKey?: string,
 ) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
@@ -1152,8 +1155,14 @@ export async function createImageEditTask(
   if (messages?.length) {
     formData.append("messages", JSON.stringify(messages));
   }
+  if (industryKey) {
+    formData.append("industry_key", industryKey);
+  }
   formData.append("visibility", visibility);
   formData.append("n", String(count));
+  if (industryKey) {
+    formData.append("industry_key", industryKey);
+  }
 
   return httpRequest<CreationTask>("/api/creation-tasks/image-edits", {
     method: "POST",

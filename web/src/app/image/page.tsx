@@ -67,6 +67,7 @@ import {
   type CreationTaskMessage,
   type ImageVisibility,
 } from "@/lib/api";
+import { IndustryPromptSelector } from "@/app/image/components/industry-prompt-selector";
 import { fetchAuthenticatedImageBlob } from "@/lib/authenticated-image";
 import { clearImageManagerCache } from "@/lib/image-manager-cache";
 import { getManagedImagePathFromUrl } from "@/lib/image-path";
@@ -217,6 +218,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
   const [imageCustomHeight, setImageCustomHeight] = useState(() => getStoredImageSizeSelection().customHeight);
   const [imageOutputFormat, setImageOutputFormat] = useState<ImageOutputFormat>(getStoredImageOutputFormat);
   const [imageOutputCompression, setImageOutputCompression] = useState(getStoredImageOutputCompression);
+  const [currentIndustryKey, setCurrentIndustryKey] = useState("");
   const [keepInputsAfterSubmit, setKeepInputsAfterSubmit] = useState(getStoredKeepInputsAfterSubmit);
   const [defaultImageVisibility, setDefaultImageVisibility] = useState<ImageVisibility>("private");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -1344,6 +1346,8 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
               taskImageResolution,
               taskOutputFormat,
               taskOutputCompression,
+              undefined,
+              currentIndustryKey || undefined,
             );
           }
           return createImageGenerationTask(
@@ -1358,6 +1362,8 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
             taskImageResolution,
             taskOutputFormat,
             taskOutputCompression,
+            undefined,
+            currentIndustryKey || undefined,
           );
         };
         updateTurnProgress(conversationId, activeTurn.id, {
@@ -2145,7 +2151,8 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
               } as CSSProperties
             }
           >
-            <div className="pointer-events-auto mx-auto w-full max-w-[900px]">
+            <div className="pointer-events-auto mx-auto flex w-full max-w-[900px] flex-col gap-2">
+              <IndustryPromptSelector onIndustryKeyChange={setCurrentIndustryKey} />
               <ImageComposer
                 composerMode={composerMode}
                 prompt={imagePrompt}

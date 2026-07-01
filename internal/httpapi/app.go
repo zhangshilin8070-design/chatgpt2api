@@ -49,6 +49,7 @@ type App struct {
 	tasks          *service.ImageTaskService
 	announce       *service.AnnouncementService
 	prompts        *service.PromptFavoriteService
+	industry       *service.IndustryPromptService
 	cpa            *service.CPAConfig
 	cpaImport      *service.CPAImportService
 	sub2           *service.Sub2APIConfig
@@ -128,7 +129,7 @@ func NewApp() (*App, error) {
 		PreferBucketB:  preferBucketB,
 	}
 	engine.BillingChecker = billing
-	app := &App{config: cfg, auth: auth, accounts: accounts, openaiAccounts: openaiAccounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cloudStorage: cloudStorage, appVersion: appVersion, cancel: cancel}
+	app := &App{config: cfg, auth: auth, accounts: accounts, openaiAccounts: openaiAccounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), industry: service.NewIndustryPromptService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cloudStorage: cloudStorage, appVersion: appVersion, cancel: cancel}
 	app.images.SetCloudStorageRef(cloudStorage)
 	app.cpaImport = service.NewCPAImportService(app.cpa, accounts, proxy)
 	app.sub2Import = service.NewSub2APIService(app.sub2, accounts)
@@ -155,6 +156,7 @@ func NewApp() (*App, error) {
 		cfg.UserDefaultRPMLimit,
 	)
 	app.tasks.SetBillingService(billing)
+	app.tasks.SetIndustryPromptService(app.industry)
 	// 把 Auto 路由解析器注入异步任务服务：creation-task 在 submit 阶段
 	// 走与 /v1/images/generations 相同的对外模型 → 桶映射，确保两条
 	// 入口对桶 / resolved_model 的处理保持一致。
@@ -926,8 +928,14 @@ func isPermissionCheckSkipped(path string) bool {
 		return true
 	case "/api/profile/prompt-favorites":
 		return true
+	case "/api/profile/industry-prompts":
+		return true
+	case "/api/profile/current-industry":
+		return true
 	default:
-		return strings.HasPrefix(path, "/api/profile/api-key/") || strings.HasPrefix(path, "/api/profile/prompt-favorites/")
+		return strings.HasPrefix(path, "/api/profile/api-key/") ||
+			strings.HasPrefix(path, "/api/profile/prompt-favorites/") ||
+			strings.HasPrefix(path, "/api/profile/industry-prompts/")
 	}
 }
 
@@ -1016,6 +1024,7 @@ func readMultipartImageBody(r *http.Request) (map[string]any, []protocol.Uploade
 		"share_prompt_parameters": firstForm(r.MultipartForm, "share_prompt_parameters"),
 		"share_reference_images":  firstForm(r.MultipartForm, "share_reference_images"),
 		"visibility":              firstForm(r.MultipartForm, "visibility"),
+		"industry_key":            firstForm(r.MultipartForm, "industry_key"),
 		"response_format":         firstNonEmpty(firstForm(r.MultipartForm, "response_format"), "b64_json"),
 		"stream":                  util.ToBool(firstForm(r.MultipartForm, "stream")),
 	}

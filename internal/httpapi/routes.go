@@ -1159,6 +1159,9 @@ func imageTaskRequestMetadata(body map[string]any) map[string]any {
 			metadata["share_reference_images"] = true
 		}
 	}
+	if industryKey := util.Clean(body["industry_key"]); industryKey != "" {
+		metadata["industry_key"] = industryKey
+	}
 	return metadata
 }
 
